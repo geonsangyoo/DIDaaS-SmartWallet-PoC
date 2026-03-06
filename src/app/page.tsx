@@ -3,6 +3,7 @@
 import thirdwebIcon from "@public/thirdweb.svg";
 import Image from "next/image";
 import { ConnectButton } from "thirdweb/react";
+import { ethereum, sepolia } from "thirdweb/chains";
 import { client } from "./client";
 
 export default function Home() {
@@ -14,6 +15,7 @@ export default function Home() {
         <div className="flex justify-center mb-20">
           <ConnectButton
             client={client}
+            chains={[ethereum, sepolia]}
             appMetadata={{
               name: "Example App",
               url: "https://example.com",

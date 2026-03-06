@@ -16,6 +16,7 @@
     "thirdweb": "^5"
   },
   "devDependencies": {
+    "@safe-global/sdk-starter-kit": "^3.0.2",
     "@types/node": "^20",
     "@types/react": "19.1.10",
     "@types/react-dom": "19.1.7",
@@ -25,7 +26,8 @@
     "postcss": "^8",
     "prettier": "^3.6.2",
     "tailwindcss": "^3.3.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "@types/bun": "latest"
   },
   "pnpm": {
     "overrides": {
