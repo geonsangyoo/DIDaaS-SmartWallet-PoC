@@ -1,102 +1,101 @@
 "use client";
 
-import thirdwebIcon from "@public/thirdweb.svg";
-import Image from "next/image";
-import { ConnectButton } from "thirdweb/react";
-import { ethereum, sepolia } from "thirdweb/chains";
+import { useState } from "react";
+import { GoogleLogin } from "@react-oauth/google";
+import { inAppWallet } from "thirdweb/wallets";
+import { useConnect, useActiveWallet, useDisconnect, useActiveAccount } from "thirdweb/react";
 import { client } from "./client";
 
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
+
 export default function Home() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const { connect } = useConnect();
+  const activeWallet = useActiveWallet();
+  const account = useActiveAccount();
+  const { disconnect } = useDisconnect();
+
+  // googleIdToken  = signed by Google's private key (proves the user authenticated with Google)
+  // customJwt      = signed by OUR private key      (what thirdweb verifies against our JWKS)
+  const handleGoogleSuccess = async (googleIdToken: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      // Step 1: exchange the Google ID token for a JWT signed by our own private key
+      const res = await fetch(`${BACKEND_URL}/auth/google`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken: googleIdToken }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to obtain JWT from backend");
+      }
+      const { jwt } = (await res.json()) as { jwt: string };
+
+      // Step 2: pass our custom JWT to thirdweb
+      //         thirdweb verifies it against our /.well-known/jwks.json
+      await connect(async () => {
+        const wallet = inAppWallet();
+        await wallet.connect({ client, strategy: "jwt", jwt });
+        return wallet;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Connection failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (account) {
+    return (
+      <main className="p-4 pb-10 min-h-[100vh] flex items-center justify-center container max-w-screen-lg mx-auto">
+        <div className="flex flex-col items-center gap-6 py-20 text-center">
+          <h1 className="text-3xl font-bold text-zinc-100">Smart Wallet Connected</h1>
+
+          <div className="border border-zinc-700 rounded-lg p-4 bg-zinc-900 max-w-sm w-full">
+            <p className="text-xs text-zinc-500 mb-1 uppercase tracking-wider">Wallet Address</p>
+            <p className="text-sm font-mono text-zinc-200 break-all">{account.address}</p>
+          </div>
+
+          <button
+            onClick={() => activeWallet && disconnect(activeWallet)}
+            className="mt-4 px-6 py-2 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors text-sm"
+          >
+            Disconnect
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="p-4 pb-10 min-h-[100vh] flex items-center justify-center container max-w-screen-lg mx-auto">
-      <div className="py-20">
-        <Header />
+      <div className="flex flex-col items-center gap-8 py-20 text-center">
+        <h1 className="text-4xl font-bold text-zinc-100">DIDaaS Smart Wallet</h1>
 
-        <div className="flex justify-center mb-20">
-          <ConnectButton
-            client={client}
-            chains={[ethereum, sepolia]}
-            appMetadata={{
-              name: "Example App",
-              url: "https://example.com",
-            }}
-          />
+        <div className="border border-zinc-800 rounded-xl p-8 bg-zinc-900/50 flex flex-col items-center gap-4 w-full max-w-sm">
+          {error && (
+            <p className="text-red-400 text-sm bg-red-900/20 border border-red-800 rounded-lg px-4 py-2 w-full">
+              {error}
+            </p>
+          )}
+
+          {loading ? (
+            <p className="text-zinc-400 text-sm">Connecting wallet…</p>
+          ) : (
+            <GoogleLogin
+              onSuccess={(res) => res.credential && handleGoogleSuccess(res.credential)}
+              onError={() => setError("Google sign-in failed")}
+              theme="filled_black"
+              shape="rectangular"
+              size="large"
+            />
+          )}
         </div>
-
-        <ThirdwebResources />
       </div>
     </main>
-  );
-}
-
-function Header() {
-  return (
-    <header className="flex flex-col items-center mb-20 md:mb-20">
-      <Image
-        src={thirdwebIcon}
-        alt=""
-        className="size-[150px] md:size-[150px]"
-        style={{
-          filter: "drop-shadow(0px 0px 24px #a726a9a8)",
-        }}
-      />
-
-      <h1 className="text-2xl md:text-6xl font-semibold md:font-bold tracking-tighter mb-6 text-zinc-100">
-        thirdweb SDK
-        <span className="text-zinc-300 inline-block mx-1"> + </span>
-        <span className="inline-block -skew-x-6 text-blue-500"> Next.js </span>
-      </h1>
-
-      <p className="text-zinc-300 text-base">
-        Read the{" "}
-        <code className="bg-zinc-800 text-zinc-300 px-2 rounded py-1 text-sm mx-1">
-          README.md
-        </code>{" "}
-        file to get started.
-      </p>
-    </header>
-  );
-}
-
-function ThirdwebResources() {
-  return (
-    <div className="grid gap-4 lg:grid-cols-3 justify-center">
-      <ArticleCard
-        title="thirdweb SDK Docs"
-        href="https://portal.thirdweb.com/typescript/v5"
-        description="thirdweb TypeScript SDK documentation"
-      />
-
-      <ArticleCard
-        title="Components and Hooks"
-        href="https://portal.thirdweb.com/typescript/v5/react"
-        description="Learn about the thirdweb React components and hooks in thirdweb SDK"
-      />
-
-      <ArticleCard
-        title="thirdweb Dashboard"
-        href="https://thirdweb.com/dashboard"
-        description="Deploy, configure, and manage your smart contracts from the dashboard."
-      />
-    </div>
-  );
-}
-
-function ArticleCard(props: {
-  title: string;
-  href: string;
-  description: string;
-}) {
-  return (
-    <a
-      href={props.href + "?utm_source=next-template"}
-      target="_blank"
-      className="flex flex-col border border-zinc-800 p-4 rounded-lg hover:bg-zinc-900 transition-colors hover:border-zinc-700"
-    >
-      <article>
-        <h2 className="text-lg font-semibold mb-2">{props.title}</h2>
-        <p className="text-sm text-zinc-400">{props.description}</p>
-      </article>
-    </a>
   );
 }

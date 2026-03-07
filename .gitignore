@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+/backend/node_modules
 /.pnp
 .pnp.js
 .yarn/install-state.gz
@@ -28,6 +29,7 @@ yarn-error.log*
 # local env files
 .env*.local
 .env
+/backend/.env
 
 # vercel
 .vercel
@@ -35,3 +37,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# backend
+/backend/bun.lock
+
+# claude
+.claude
