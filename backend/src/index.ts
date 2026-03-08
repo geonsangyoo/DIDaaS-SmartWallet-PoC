@@ -12,7 +12,8 @@ import {
 const app = Fastify({ logger: true });
 
 await app.register(cors, {
-  origin: process.env.FRONTEND_URL || "http://localhost:3000",
+  // TODO: in production, set this to your actual frontend URL and not "*"
+  origin: "*",
 });
 
 const privateKeyPem = process.env.PRIVATE_KEY_PEM;
