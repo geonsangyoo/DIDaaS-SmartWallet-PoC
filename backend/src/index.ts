@@ -106,4 +106,52 @@ app.post<{ Body: { idToken: string } }>(
   }
 );
 
+// ── Auth-endpoint verification ────────────────────────────────────────────────
+// ThirdWeb calls this endpoint (strategy: "auth_endpoint") to verify the payload
+// that the frontend passes via wallet.connect({ payload: "<google-id-token>" }).
+//
+// Configure in thirdweb dashboard → In-App Wallet → Custom Auth Endpoint:
+//   Endpoint URL : http://localhost:3001/auth/verify-payload
+//
+// Request body : { payload: string }  — the raw Google ID token from the client
+// Response body: { userId, email?, exp? }
+app.post<{ Body: { payload: string } }>(
+  "/auth/verify-payload",
+  {
+    schema: {
+      body: {
+        type: "object",
+        required: ["payload"],
+        properties: { payload: { type: "string" } },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { payload } = req.body;
+
+    // The payload is the Google ID token sent directly from the client
+    let googlePayload: { sub?: string; email?: string };
+    try {
+      const { payload: gPayload } = await jwtVerify(payload, googleJWKS, {
+        audience: googleClientId,
+        issuer: ["https://accounts.google.com", "accounts.google.com"],
+      });
+      googlePayload = gPayload as typeof googlePayload;
+    } catch (err) {
+      app.log.warn({ err }, "auth_endpoint payload verification failed");
+      return reply.status(401).send({ error: "Invalid payload" });
+    }
+
+    if (!googlePayload.sub) {
+      return reply.status(401).send({ error: "Missing sub in token" });
+    }
+
+    // Return the userId (and optional email) that thirdweb uses to bind the wallet
+    return {
+      userId: googlePayload.sub,
+      email: googlePayload.email,
+    };
+  }
+);
+
 await app.listen({ port, host: "0.0.0.0" });

@@ -17,9 +17,10 @@ export default function Home() {
   const account = useActiveAccount();
   const { disconnect } = useDisconnect();
 
+  // ── Strategy: jwt ─────────────────────────────────────────────────────────────
   // googleIdToken  = signed by Google's private key (proves the user authenticated with Google)
   // customJwt      = signed by OUR private key      (what thirdweb verifies against our JWKS)
-  const handleGoogleSuccess = async (googleIdToken: string) => {
+  const handleGoogleSuccessJwt = async (googleIdToken: string) => {
     setLoading(true);
     setError(null);
     try {
@@ -40,6 +41,30 @@ export default function Home() {
       await connect(async () => {
         const wallet = inAppWallet();
         await wallet.connect({ client, strategy: "jwt", jwt });
+        return wallet;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Connection failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── Strategy: auth_endpoint ────────────────────────────────────────────────
+  // The Google ID token is passed directly as the payload.
+  // ThirdWeb POSTs { payload } to our backend /auth/verify-payload endpoint,
+  // which verifies the Google token and returns { userId, email }.
+  const handleGoogleSuccessAuthEndpoint = async (googleIdToken: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      await connect(async () => {
+        const wallet = inAppWallet();
+        await wallet.connect({
+          client,
+          strategy: "auth_endpoint",
+          payload: googleIdToken,
+        });
         return wallet;
       });
     } catch (err) {
@@ -76,25 +101,41 @@ export default function Home() {
       <div className="flex flex-col items-center gap-8 py-20 text-center">
         <h1 className="text-4xl font-bold text-zinc-100">DIDaaS Smart Wallet</h1>
 
-        <div className="border border-zinc-800 rounded-xl p-8 bg-zinc-900/50 flex flex-col items-center gap-4 w-full max-w-sm">
-          {error && (
-            <p className="text-red-400 text-sm bg-red-900/20 border border-red-800 rounded-lg px-4 py-2 w-full">
-              {error}
-            </p>
-          )}
+        {error && (
+          <p className="text-red-400 text-sm bg-red-900/20 border border-red-800 rounded-lg px-4 py-2 w-full max-w-sm">
+            {error}
+          </p>
+        )}
 
-          {loading ? (
-            <p className="text-zinc-400 text-sm">Connecting wallet…</p>
-          ) : (
-            <GoogleLogin
-              onSuccess={(res) => res.credential && handleGoogleSuccess(res.credential)}
-              onError={() => setError("Google sign-in failed")}
-              theme="filled_black"
-              shape="rectangular"
-              size="large"
-            />
-          )}
-        </div>
+        {loading ? (
+          <p className="text-zinc-400 text-sm">Connecting wallet…</p>
+        ) : (
+          <div className="flex flex-col gap-6 w-full max-w-sm">
+            {/* Strategy: jwt — frontend exchanges Google token for our custom JWT */}
+            <div className="border border-zinc-800 rounded-xl p-6 bg-zinc-900/50 flex flex-col items-center gap-3">
+              <p className="text-xs text-zinc-500 uppercase tracking-wider">Strategy: jwt (OIDC)</p>
+              <GoogleLogin
+                onSuccess={(res) => res.credential && handleGoogleSuccessJwt(res.credential)}
+                onError={() => setError("Google sign-in failed")}
+                theme="filled_black"
+                shape="rectangular"
+                size="large"
+              />
+            </div>
+
+            {/* Strategy: auth_endpoint — ThirdWeb calls our backend to verify the payload */}
+            <div className="border border-zinc-800 rounded-xl p-6 bg-zinc-900/50 flex flex-col items-center gap-3">
+              <p className="text-xs text-zinc-500 uppercase tracking-wider">Strategy: auth_endpoint</p>
+              <GoogleLogin
+                onSuccess={(res) => res.credential && handleGoogleSuccessAuthEndpoint(res.credential)}
+                onError={() => setError("Google sign-in failed")}
+                theme="filled_black"
+                shape="rectangular"
+                size="large"
+              />
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );

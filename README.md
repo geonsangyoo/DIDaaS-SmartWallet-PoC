@@ -1,12 +1,19 @@
 # DIDaaS Smart Wallet PoC
 
-A proof-of-concept for creating **ERC-4337 smart wallets** authenticated via **Google social login + Custom JWT (RS256)** using the [thirdweb Growth plan](https://thirdweb.com/pricing).
+A proof-of-concept for creating **ERC-4337 smart wallets** authenticated via **Google social login** using two thirdweb custom authentication strategies:
+
+- **`jwt` (OIDC)** — frontend exchanges the Google ID token for a custom RS256 JWT; thirdweb verifies it against our JWKS endpoint.
+- **`auth_endpoint`** — Google ID token is passed directly as the payload; thirdweb calls our backend to verify it and returns the user identity.
+
+Uses the [thirdweb Growth plan](https://thirdweb.com/pricing).
 
 ## Architecture
 
+### Strategy: `jwt` (OIDC)
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Auth Flow                                                      │
+│  Auth Flow — strategy: jwt                                      │
 │                                                                 │
 │  User                  Frontend              Backend            │
 │   │                      │                     │               │
@@ -18,11 +25,37 @@ A proof-of-concept for creating **ERC-4337 smart wallets** authenticated via **G
 │   │                      │                     │ Google JWKS   │
 │   │                      │<── { jwt } ─────────│               │
 │   │                      │                     │               │
-│   │          inAppWallet.connect({ jwt })       │               │
+│   │          inAppWallet.connect({ strategy: "jwt", jwt })     │
 │   │          thirdweb fetches /.well-known/jwks.json           │
 │   │          thirdweb verifies RS256 JWT                       │
 │   │          smartWallet created (ERC-4337, Sepolia)           │
 │   │<── Smart wallet address ────────────────────              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Strategy: `auth_endpoint` (Generic Auth)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Auth Flow — strategy: auth_endpoint                            │
+│                                                                 │
+│  User                  Frontend   ThirdWeb        Backend       │
+│   │                      │           │               │          │
+│   │─── Click Google ────>│           │               │          │
+│   │<── Google ID token ──│           │               │          │
+│   │     inAppWallet.connect({        │               │          │
+│   │       strategy: "auth_endpoint", │               │          │
+│   │       payload: googleIdToken })  │               │          │
+│   │                      │──────────>│               │          │
+│   │                      │           │─POST /auth/verify-payload>│
+│   │                      │           │  { payload: googleIdToken }│
+│   │                      │           │               │ Verify   │
+│   │                      │           │               │ Google   │
+│   │                      │           │               │ JWKS     │
+│   │                      │           │<── { userId, email } ────│
+│   │                      │           │               │          │
+│   │          smartWallet created (ERC-4337, Sepolia)            │
+│   │<── Smart wallet address ──────────────────────────          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -106,7 +139,9 @@ PORT=3001
 
 ---
 
-## Step 4 — Configure thirdweb dashboard (Custom JWT)
+## Step 4 — Configure thirdweb dashboard
+
+### 4a — Custom JWT (strategy: `jwt`)
 
 1. Open [thirdweb Dashboard](https://thirdweb.com/dashboard) → your project → **In-App Wallet**.
 2. Go to **Authentication** → enable **Custom JSON Web Token**.
@@ -119,7 +154,19 @@ PORT=3001
 
 4. Save.
 
-> For production, deploy the backend and use its public URL as the JWKS URI.
+### 4b — Auth Endpoint (strategy: `auth_endpoint`)
+
+1. In the same **Authentication** tab, enable **Custom Auth Endpoint**.
+2. Set the following:
+
+| Field | Value |
+|---|---|
+| **Endpoint URL** | `http://localhost:3001/auth/verify-payload` (dev) or your deployed backend URL |
+
+3. Optionally add secret **Headers** that the backend can check to authenticate the request from thirdweb.
+4. Save.
+
+> For production, deploy the backend and use its public URL for both endpoints.
 
 ---
 
@@ -173,12 +220,13 @@ Open [http://localhost:3000](http://localhost:3000).
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/.well-known/jwks.json` | Public JWKS — thirdweb calls this to verify JWTs |
-| `POST` | `/auth/google` | Accepts `{ idToken }`, verifies via Google, returns `{ jwt }` |
+| `GET` | `/.well-known/jwks.json` | Public JWKS — thirdweb calls this to verify custom JWTs (`jwt` strategy) |
+| `POST` | `/auth/google` | Accepts `{ idToken }`, verifies via Google JWKS, returns `{ jwt }` (`jwt` strategy) |
+| `POST` | `/auth/verify-payload` | Accepts `{ payload }` (Google ID token), verifies it, returns `{ userId, email }` (`auth_endpoint` strategy) |
 
-### JWT claims
+### `jwt` strategy — JWT claims
 
-The custom JWT issued by the backend contains:
+The custom JWT issued by `/auth/google` contains:
 
 ```json
 {
@@ -192,6 +240,19 @@ The custom JWT issued by the backend contains:
 ```
 
 Signed with **RS256** using your RSA-2048 private key. thirdweb verifies the signature using the public key served at `/.well-known/jwks.json`.
+
+### `auth_endpoint` strategy — verification response
+
+`/auth/verify-payload` receives `{ payload: "<google-id-token>" }` posted by thirdweb and returns:
+
+```json
+{
+  "userId": "<google-user-id>",
+  "email": "user@example.com"
+}
+```
+
+thirdweb uses `userId` (and optionally `email`) to bind the in-app wallet to the user.
 
 ### Smart wallet
 
