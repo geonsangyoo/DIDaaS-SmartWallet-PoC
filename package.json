@@ -11,13 +11,14 @@
   },
   "dependencies": {
     "@react-oauth/google": "^0.13.4",
+    "@safe-global/sdk-starter-kit": "^3.0.2",
     "next": "15.4.10",
     "react": "19.1.1",
     "react-dom": "19.1.1",
-    "thirdweb": "^5"
+    "thirdweb": "^5",
+    "viem": "^2.39.0"
   },
   "devDependencies": {
-    "@safe-global/sdk-starter-kit": "^3.0.2",
     "@types/node": "^20",
     "@types/react": "19.1.10",
     "@types/react-dom": "19.1.7",
