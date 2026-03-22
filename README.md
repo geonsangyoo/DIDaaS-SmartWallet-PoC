@@ -118,62 +118,49 @@ sequenceDiagram
     actor Employee as ① 社員 (Employee)<br/>Google in-app wallet
     actor Manager as ② 上長 (Manager)<br/>WalletConnect / Ambire
     actor Accounting as ③ 経理担当 (Accounting)<br/>Google in-app wallet
-    participant Safe as Gnosis Safe<br/>(3-of-3, Sepolia)
-    participant Factory as SafeProxyFactory<br/>(Sepolia)
-    participant TxService as Safe TX Service<br/>(api.safe.global)
+    participant TxService as Safe TX Service DB<br/>(api.safe.global — off-chain)
     participant Paymaster as ThirdWeb Paymaster<br/>(ERC-4337 Bundler)
     participant Chain as Sepolia Chain
 
-    Note over Employee,Chain: ── Pre-process: Collect EOA addresses (one-time per signer) ──
-    Employee->>Employee: inAppWallet().connect({ strategy: "jwt" })
-    Employee-->>Employee: EOA address → set NEXT_PUBLIC_EMPLOYEE_ADDRESS
-    Manager->>Manager: WalletConnect / Ambire login
-    Manager-->>Manager: EOA address → set NEXT_PUBLIC_ADMIN1_ADDRESS
-    Accounting->>Accounting: inAppWallet().connect({ strategy: "jwt" })
-    Accounting-->>Accounting: EOA address → set NEXT_PUBLIC_ADMIN2_ADDRESS
+    Note over Employee,Chain: ── Pre-process: Create Safe (one-time, off-chain) ──────────────
+    Employee->>TxService: Create Safe with owners=[employee, manager, accounting], threshold=3
+    TxService-->>Employee: Safe address stored in TX Service DB ✓ (no blockchain tx)
 
-    Note over Employee,Chain: ── Pre-process: Deploy Gnosis Safe (one-time) ────────────────
-    Employee->>Paymaster: handleDeploy()<br/>inAppWallet ERC-4337 UserOperation
-    Paymaster->>Factory: createProxyWithNonce(<br/>  owners=[employee,manager,accounting],<br/>  threshold=3, saltNonce=0)
-    Factory->>Chain: deploy SafeProxy contract
-    Chain-->>Factory: Safe contract address
-    Factory-->>Paymaster: tx receipt
-    Paymaster-->>Employee: Safe deployed ✓ (gas sponsored)
-    Employee->>TxService: Safe address registered automatically
+    Note over Employee,Chain: ── Step ① : Propose expense reimbursement (off-chain) ────────
+    Employee->>TxService: safeClient.send() → POST /multisig-transactions<br/>{ to, value, nonce, safeTxHash, signature }
+    TxService-->>Employee: safeTxHash (stored in DB)
 
-    Note over Employee,Chain: ── Step ① : Propose expense reimbursement ────────────────────
-    Employee->>Safe: safeClient.send({ to: employeeEOA, value })
-    Safe->>TxService: POST /multisig-transactions (signed proposal)
-    TxService-->>Employee: safeTxHash
-
-    Note over Employee,Chain: ── Step ② : Manager approval ─────────────────────────────────
+    Note over Employee,Chain: ── Step ② : Manager approval (off-chain) ─────────────────────
     Manager->>TxService: GET /multisig-transactions/{safeTxHash}
     TxService-->>Manager: pending tx details
-    Manager->>Manager: protocolKit.signTransaction(tx) [raw ECDSA, EOA]
+    Manager->>Manager: protocolKit.signTransaction(tx)<br/>[raw ECDSA over Safe typed-data hash]
     Manager->>TxService: POST confirmTransaction(safeTxHash, signature)
-    TxService-->>Manager: 200 OK (1/3 signatures collected)
+    TxService-->>Manager: 1/3 signatures stored in DB
 
-    Note over Employee,Chain: ── Step ③ : Accounting approval ──────────────────────────────
+    Note over Employee,Chain: ── Step ③ : Accounting approval (off-chain) ──────────────────
     Accounting->>TxService: GET /multisig-transactions/{safeTxHash}
     TxService-->>Accounting: pending tx details
-    Accounting->>Accounting: protocolKit.signTransaction(tx) [raw ECDSA, EOA]
+    Accounting->>Accounting: protocolKit.signTransaction(tx)<br/>[raw ECDSA over Safe typed-data hash]
     Accounting->>TxService: POST confirmTransaction(safeTxHash, signature)
-    TxService-->>Accounting: 200 OK (2/3 signatures collected)
+    TxService-->>Accounting: 2/3 signatures stored in DB
 
-    Note over Employee,Chain: ── Step ③b: Employee final approval ──────────────────────────
+    Note over Employee,Chain: ── Step ③b : Employee final approval (off-chain) ────────────
     Employee->>TxService: GET /multisig-transactions/{safeTxHash}
     TxService-->>Employee: pending tx details
-    Employee->>Employee: protocolKit.signTransaction(tx) [raw ECDSA, EOA]
+    Employee->>Employee: protocolKit.signTransaction(tx)<br/>[raw ECDSA over Safe typed-data hash]
     Employee->>TxService: POST confirmTransaction(safeTxHash, signature)
-    TxService-->>Employee: 200 OK (3/3 signatures — threshold met ✓)
+    TxService-->>Employee: 3/3 — threshold met ✓ (still off-chain)
 
-    Note over Employee,Chain: ── Execute On-Chain (gas sponsored) ──────────────────────────
+    Note over Employee,Chain: ── ⚡ Execute On-Chain — first & only blockchain tx (gas sponsored)
+    Employee->>TxService: GET signatures for safeTxHash
+    TxService-->>Employee: all 3 collected signatures
     Employee->>Paymaster: inAppWallet ERC-4337 UserOperation<br/>safeClient.confirm({ safeTxHash })
-    Paymaster->>Chain: execTransaction(to, value, data, signatures)
-    Chain->>Safe: verify 3 owner signatures (ecrecover)
-    Safe-->>Chain: ETH transfer to employee EOA
+    Note over Paymaster,Chain: Safe contract deployed on-chain here<br/>(SafeProxyFactory.createProxyWithNonce) if not yet deployed
+    Paymaster->>Chain: execTransaction(to, value, data, [sig1, sig2, sig3])
+    Chain->>Chain: deploy Safe + verify 3 EOA signatures (ecrecover)
+    Chain-->>Chain: ETH transfer to employee EOA
     Chain-->>Paymaster: tx receipt
-    Paymaster-->>Employee: ethereumTxHash ✓
+    Paymaster-->>Employee: ethereumTxHash ✓ (gas paid by ThirdWeb)
 ```
 
 ### Signature vs Execution — why they are separated
