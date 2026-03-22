@@ -99,7 +99,7 @@ function TxCard({ tx, role, cfg, actionLoading, isSafeDeployed, alreadySigned, o
             ? "Processing…"
             : role === "admin1"
             ? "② 承認する (Approve)"
-            : "③ 最終承認・実行 (Final Approve & Execute)"}
+            : "③ 最終承認 (Final Approve)"}
         </button>
       ) : null}
     </div>
@@ -195,9 +195,7 @@ export function RolePanel({
       {(role === "admin1" || role === "admin2") && (
         <div className="space-y-3">
           <p className="text-sm text-zinc-400">
-            {role === "admin1"
-              ? "申請を確認し署名します。(Review and sign)"
-              : "最終承認 — 閾値に達したら自動実行。(Final sign → executes)"}
+            申請を確認し署名します。(Review and sign)
           </p>
 
           {pending.length === 0 && (
@@ -222,7 +220,7 @@ export function RolePanel({
         </div>
       )}
 
-      {/* ① Employee: see fully-signed transactions that need manual execution */}
+      {/* See fully-signed transactions that need manual execution */}
       {role === "employee" && pending.some((t) => t.confirmations.length >= t.confirmationsRequired) && (
         <div className="space-y-3 pt-2 border-t border-zinc-800">
           <p className="text-xs text-zinc-500 uppercase tracking-wider">
