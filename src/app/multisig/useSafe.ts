@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { inAppWallet, createWallet, walletConnect } from "thirdweb/wallets";
+import { inAppWallet, createWallet, walletConnect, smartWallet } from "thirdweb/wallets";
 import {
   useConnect,
   useActiveAccount,
@@ -145,20 +145,30 @@ export function useSafe() {
     }
   };
 
-  // ── Deploy the Safe (one-time, any owner pays gas) ───────────────────────
+  // ── Shared: build a gas-sponsored Safe client via ThirdWeb SmartWallet ─────
+  // SmartWallet.signTypedData() delegates to personalAccount (EOA), so the
+  // signature recovers to account.address — the actual Safe owner address.
+  // Transactions (execute, deploy) are sent as ERC-4337 UserOperations, so
+  // ThirdWeb's paymaster covers the gas; no ETH required in the EOA wallet.
+  async function buildSponsoredClient(acc: NonNullable<typeof account>) {
+    const sw = smartWallet({ chain: sepolia, sponsorGas: true });
+    await sw.connect({ client, chain: sepolia, personalAccount: acc });
+    const walletClient = viemAdapter.wallet.toViem({ client, chain: sepolia, wallet: sw });
+    return buildSafeClient(walletClient, acc.address);
+  }
+
+  // ── Deploy the Safe (one-time) ────────────────────────────────────────────
   const handleDeploy = async () => {
-    if (!activeWallet || !account) return;
+    if (!account) return;
     setActionLoading(true);
     setError(null);
     setSuccess(null);
     try {
-      const walletClient = viemAdapter.wallet.toViem({
-        client,
-        chain: sepolia,
-        wallet: activeWallet,
-      });
+      const sw = smartWallet({ chain: sepolia, sponsorGas: true });
+      await sw.connect({ client, chain: sepolia, personalAccount: account });
+      const walletClient = viemAdapter.wallet.toViem({ client, chain: sepolia, wallet: sw });
       const txHash = await deploySafe(walletClient, account.address);
-      setSuccess(`Safe deployed! TX: ${txHash}\nWaiting for confirmation…`);
+      setSuccess(`Safe deployed (gas sponsored)! TX: ${txHash}\nWaiting for confirmation…`);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Deployment failed");
@@ -168,26 +178,33 @@ export function useSafe() {
   };
 
   // ── Any owner: execute a fully-signed (threshold-met) transaction ────────
-  // Uses safeClient.confirm() which skips signing when threshold is already met
-  // and goes straight to on-chain execution — the SDK's intended execution path.
   const handleExecute = async (safeTxHash: string) => {
-    if (!activeWallet || !account) return;
+    if (!account) return;
     setActionLoading(true);
     setError(null);
     setSuccess(null);
     try {
-      const walletClient = viemAdapter.wallet.toViem({
-        client,
-        chain: sepolia,
-        wallet: activeWallet,
-      });
-      const safeClient = await buildSafeClient(walletClient, account.address);
+      const safeClient = await buildSponsoredClient(account);
       const result = await safeClient.confirm({ safeTxHash });
+      const execTxHash = result.transactions?.ethereumTxHash;
       setSuccess(
-        result.transactions?.ethereumTxHash
-          ? `✓ Executed on-chain! TX: ${result.transactions.ethereumTxHash}`
+        execTxHash
+          ? `✓ Executed (gas sponsored)! TX: ${execTxHash}`
           : `Transaction status: ${result.status}`
       );
+      // Optimistically mark as executed so the Execute button disappears immediately.
+      // The TX Service may lag behind on-chain state, so also re-fetch after a delay.
+      if (execTxHash) {
+        setSafeInfo(prev => prev ? {
+          ...prev,
+          pendingTransactions: prev.pendingTransactions.map(tx =>
+            tx.safeTxHash === safeTxHash
+              ? { ...tx, isExecuted: true, transactionHash: execTxHash }
+              : tx
+          ),
+        } : null);
+        setTimeout(() => refresh(), 4000);
+      }
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Execution failed");
@@ -197,6 +214,10 @@ export function useSafe() {
   };
 
   // ── ② ③ Admin: sign a pending transaction ────────────────────────────────
+  // MUST use activeWallet (EOA) directly — SmartWallet wraps typed-data
+  // signatures in an ERC-6492/EIP-1271 format that Safe's ecrecover rejects.
+  // If this is the last signature, the SDK auto-executes using EOA gas.
+  // For gas-sponsored execution use the "⚡ Execute On-Chain" button instead.
   const handleConfirm = async (safeTxHash: string) => {
     if (!activeWallet || !account) return;
     setActionLoading(true);
@@ -210,12 +231,24 @@ export function useSafe() {
       });
       const safeClient = await buildSafeClient(walletClient, account.address);
       const result = await safeClient.confirm({ safeTxHash });
+      const execTxHash = result.transactions?.ethereumTxHash;
 
       setSuccess(
-        result.transactions?.ethereumTxHash
-          ? `✓ All signatures collected — executed!\n  TX: ${result.transactions.ethereumTxHash}`
+        execTxHash
+          ? `✓ All signatures collected — executed!\n  TX: ${execTxHash}`
           : `✓ Signature submitted (${role ? ROLE_CONFIG[role].labelJa : ""}). Waiting for remaining approvals.`
       );
+      if (execTxHash) {
+        setSafeInfo(prev => prev ? {
+          ...prev,
+          pendingTransactions: prev.pendingTransactions.map(tx =>
+            tx.safeTxHash === safeTxHash
+              ? { ...tx, isExecuted: true, transactionHash: execTxHash }
+              : tx
+          ),
+        } : null);
+        setTimeout(() => refresh(), 2000);
+      }
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Confirm failed");
