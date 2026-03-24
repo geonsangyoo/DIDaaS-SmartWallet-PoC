@@ -1,7 +1,8 @@
 # DIDaaS Smart Wallet PoC
 
-A proof-of-concept for creating **ERC-4337 smart wallets** authenticated via **Google social login** using two thirdweb custom authentication strategies:
+A proof-of-concept for creating **ERC-4337 smart wallets** with three thirdweb in-app wallet authentication strategies:
 
+- **`phone` (SMS OTP)** — thirdweb sends a one-time passcode via SMS; no backend required.
 - **`jwt` (OIDC)** — frontend exchanges the Google ID token for a custom RS256 JWT; thirdweb verifies it against our JWKS endpoint.
 - **`auth_endpoint`** — Google ID token is passed directly as the payload; thirdweb calls our backend to verify it and returns the user identity.
 
@@ -11,6 +12,7 @@ Uses the [thirdweb Growth plan](https://thirdweb.com/pricing).
 
 ## Features
 
+- **SMS OTP Login** → thirdweb in-app wallet via phone number (no backend required)
 - **Google Social Login** → thirdweb in-app wallet (EOA managed key)
 - **Multi-Sig expense approval flow** — 3-of-3 Gnosis Safe on Sepolia (`/multisig`)
 - **Gas sponsorship** — ERC-4337 UserOperations via thirdweb paymaster (no ETH required for execution)
@@ -18,6 +20,33 @@ Uses the [thirdweb Growth plan](https://thirdweb.com/pricing).
 ---
 
 ## Architecture
+
+### Strategy: `phone` (SMS OTP)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Auth Flow — strategy: phone                                    │
+│                                                                 │
+│  User                  Frontend   ThirdWeb                      │
+│   │                      │           │                          │
+│   │─── Enter phone ─────>│           │                          │
+│   │      preAuthenticate({ strategy: "phone", phoneNumber })    │
+│   │                      │──────────>│                          │
+│   │                      │           │ Send SMS OTP             │
+│   │<── SMS OTP ──────────────────────────────────              │
+│   │─── Enter OTP ───────>│           │                          │
+│   │      inAppWallet.connect({        │                          │
+│   │        strategy: "phone",         │                          │
+│   │        phoneNumber,               │                          │
+│   │        verificationCode: otp })   │                          │
+│   │                      │──────────>│                          │
+│   │                      │           │ Verify OTP               │
+│   │          EOA wallet created (thirdweb managed key)          │
+│   │<── EOA wallet address ────────────────────────────          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+> **No backend required.** thirdweb manages SMS delivery and OTP verification entirely. Phone numbers must include a country code (e.g. `+81 90-1234-5678`). SMS OTP is available for [selected countries](https://portal.thirdweb.com/connect/in-app-wallet/overview) only.
 
 ### Strategy: `jwt` (OIDC)
 
@@ -276,7 +305,15 @@ PORT=3001
 
 4. Save.
 
-### 4b — Auth Endpoint (strategy: `auth_endpoint`)
+### 4b — Phone / SMS OTP (strategy: `phone`)
+
+1. In the same **Authentication** tab, enable **Phone number**.
+2. No additional configuration is required — thirdweb handles SMS delivery.
+3. Save.
+
+> SMS OTP is restricted to [selected countries](https://portal.thirdweb.com/connect/in-app-wallet/overview). Check the thirdweb dashboard for the current supported list.
+
+### 4c — Auth Endpoint (strategy: `auth_endpoint`)
 
 1. In the same **Authentication** tab, enable **Custom Auth Endpoint**.
 2. Set the following:
@@ -348,6 +385,15 @@ Open [http://localhost:3000](http://localhost:3000).
 ---
 
 ## How it works
+
+### `phone` strategy — SMS OTP flow
+
+1. User enters phone number with country code.
+2. `preAuthenticate({ client, strategy: "phone", phoneNumber })` — thirdweb sends an SMS with a 6-digit OTP.
+3. User enters the OTP.
+4. `wallet.connect({ client, strategy: "phone", phoneNumber, verificationCode })` — thirdweb verifies the OTP and creates (or restores) the in-app wallet.
+
+The resulting wallet address is deterministic — the same phone number always yields the same EOA.
 
 ### Backend endpoints
 
@@ -421,6 +467,7 @@ Update `FRONTEND_URL` in `backend/.env` and `NEXT_PUBLIC_BACKEND_URL` in `.env.l
 
 ## Resources
 
+- [thirdweb Phone / SMS OTP Auth](https://portal.thirdweb.com/connect/in-app-wallet/sign-in-methods/phone)
 - [thirdweb Custom JWT Auth](https://portal.thirdweb.com/connect/in-app-wallet/custom-auth/custom-jwt-provider)
 - [thirdweb Account Abstraction / Gas Sponsorship](https://portal.thirdweb.com/wallets/sponsor-gas)
 - [thirdweb TypeScript SDK v5](https://portal.thirdweb.com/typescript/v5)

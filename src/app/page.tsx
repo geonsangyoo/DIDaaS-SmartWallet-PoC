@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { GoogleLogin } from "@react-oauth/google";
-import { inAppWallet } from "thirdweb/wallets";
+import { inAppWallet, preAuthenticate } from "thirdweb/wallets";
 import { useConnect, useActiveWallet, useDisconnect, useActiveAccount } from "thirdweb/react";
 import { client } from "./client";
 
@@ -12,6 +12,11 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:300
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // ── SMS OTP state ──────────────────────────────────────────────────────────
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
 
   const { connect } = useConnect();
   const activeWallet = useActiveWallet();
@@ -42,6 +47,36 @@ export default function Home() {
       await connect(async () => {
         const wallet = inAppWallet();
         await wallet.connect({ client, strategy: "jwt", jwt });
+        return wallet;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Connection failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── Strategy: phone (SMS OTP) ─────────────────────────────────────────────
+  const handleSendOtp = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await preAuthenticate({ client, strategy: "phone", phoneNumber });
+      setOtpSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to send OTP");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePhoneConnect = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await connect(async () => {
+        const wallet = inAppWallet();
+        await wallet.connect({ client, strategy: "phone", phoneNumber, verificationCode: otpCode });
         return wallet;
       });
     } catch (err) {
@@ -119,6 +154,53 @@ export default function Home() {
           <p className="text-zinc-400 text-sm">Connecting wallet…</p>
         ) : (
           <div className="flex flex-col gap-6 w-full max-w-sm">
+            {/* Strategy: phone — ThirdWeb sends SMS OTP, no backend required */}
+            <div className="border border-zinc-800 rounded-xl p-6 bg-zinc-900/50 flex flex-col items-center gap-3">
+              <p className="text-xs text-zinc-500 uppercase tracking-wider">Strategy: phone (SMS OTP)</p>
+              {!otpSent ? (
+                <>
+                  <input
+                    type="tel"
+                    placeholder="+81 90-1234-5678"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+                  />
+                  <button
+                    onClick={handleSendOtp}
+                    disabled={loading || !phoneNumber}
+                    className="w-full py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed text-zinc-200 text-sm transition-colors"
+                  >
+                    Send OTP
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-zinc-400">OTP sent to {phoneNumber}</p>
+                  <input
+                    type="text"
+                    placeholder="Enter OTP code"
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+                  />
+                  <button
+                    onClick={handlePhoneConnect}
+                    disabled={loading || !otpCode}
+                    className="w-full py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed text-zinc-200 text-sm transition-colors"
+                  >
+                    Verify &amp; Connect
+                  </button>
+                  <button
+                    onClick={() => { setOtpSent(false); setOtpCode(""); }}
+                    className="text-xs text-zinc-500 hover:text-zinc-400 transition-colors"
+                  >
+                    Change number
+                  </button>
+                </>
+              )}
+            </div>
+
             {/* Strategy: jwt — frontend exchanges Google token for our custom JWT */}
             <div className="border border-zinc-800 rounded-xl p-6 bg-zinc-900/50 flex flex-col items-center gap-3">
               <p className="text-xs text-zinc-500 uppercase tracking-wider">Strategy: jwt (OIDC)</p>
