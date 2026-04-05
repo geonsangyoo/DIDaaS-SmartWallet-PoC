@@ -144,6 +144,13 @@ export default function Home() {
             Multi-Sig PoC (交通費精算) →
           </Link>
 
+          <Link
+            href="/batch"
+            className="w-full max-w-sm py-2 px-4 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-500 transition-colors text-sm text-center"
+          >
+            Batch Tx Verification (バッチトランザクション検証) →
+          </Link>
+
         {error && (
           <p className="text-red-400 text-sm bg-red-900/20 border border-red-800 rounded-lg px-4 py-2 w-full max-w-sm">
             {error}
