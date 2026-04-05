@@ -112,10 +112,12 @@ interface Props {
   actionLoading: boolean;
   ownersConfigured: boolean;
   isSafeDeployed: boolean;
+  isEmployeeDelegate: boolean;
   accountAddress?: string;
   onPropose: (amount: string) => void;
   onConfirm: (safeTxHash: string) => void;
   onExecute: (safeTxHash: string) => void;
+  onAddEmployeeDelegate: () => void;
 }
 
 export function RolePanel({
@@ -124,10 +126,12 @@ export function RolePanel({
   actionLoading,
   ownersConfigured,
   isSafeDeployed,
+  isEmployeeDelegate,
   accountAddress,
   onPropose,
   onConfirm,
   onExecute,
+  onAddEmployeeDelegate,
 }: Props) {
   const [amount, setAmount]           = useState("0.001");
   const [description, setDescription] = useState("交通費精算 (Transportation Expense)");
@@ -181,9 +185,14 @@ export function RolePanel({
             Recipient (個人EOA):{" "}
             {OWNER_ADDRESSES.employee ? shorten(OWNER_ADDRESSES.employee) : "not configured"}
           </p>
+          {!isEmployeeDelegate && isSafeDeployed && (
+            <p className="text-xs text-amber-400 border border-amber-700/50 bg-amber-900/10 rounded-lg px-3 py-2">
+              申請を提出する前にOwnerから委任者として登録する必要があります。
+            </p>
+          )}
           <button
             onClick={() => onPropose(amount)}
-            disabled={actionLoading || !ownersConfigured || !isSafeDeployed}
+            disabled={actionLoading || !ownersConfigured || !isSafeDeployed || !isEmployeeDelegate}
             className={`w-full py-2 px-4 rounded-lg text-white text-sm font-medium transition-colors disabled:bg-zinc-700 disabled:text-zinc-500 ${BTN.blue}`}
           >
             {actionLoading ? "Submitting…" : "① 交通費申請を提出 (Submit Request)"}
@@ -197,6 +206,31 @@ export function RolePanel({
           <p className="text-sm text-zinc-400">
             申請を確認し署名します。(Review and sign)
           </p>
+
+          {/* Delegate setup */}
+          <div className="border border-zinc-700 rounded-lg p-3 bg-zinc-800/50">
+            <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">
+              Employee Delegation
+            </p>
+            {isEmployeeDelegate ? (
+              <p className="text-xs text-green-400">
+                ✓ Employee is already registered as a delegate and can propose transactions.
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-zinc-400 mb-3">
+                  社員を委任者として登録することで、申請の提出を許可します。
+                </p>
+                <button
+                  onClick={onAddEmployeeDelegate}
+                  disabled={actionLoading || !ownersConfigured || !isSafeDeployed}
+                  className={`w-full py-2 px-4 rounded-lg text-white text-sm font-medium transition-colors disabled:bg-zinc-700 disabled:text-zinc-500 ${BTN[cfg.color]}`}
+                >
+                  {actionLoading ? "Setting up…" : "Add Employee as Delegate"}
+                </button>
+              </>
+            )}
+          </div>
 
           {pending.length === 0 && (
             <p className="text-sm text-zinc-500 italic">

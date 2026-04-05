@@ -1,5 +1,5 @@
 const STEPS = [
-  { step: "①", label: "社員",       sub: "申請署名",      color: "blue"   },
+  { step: "①", label: "社員",       sub: "申請提出",      color: "blue"   },
   null,
   { step: "②", label: "上長",       sub: "承認署名",      color: "amber"  },
   null,

@@ -34,13 +34,13 @@ export const OWNER_ADDRESSES = {
 
 // Deterministic Safe address (derived from owners + threshold + saltNonce).
 // owners must be mutable string[] for Safe SDK.
+// Employee is NOT an owner — they only propose expense transactions.
 export const SAFE_OPTIONS = {
   owners: [
-    OWNER_ADDRESSES.employee,
     OWNER_ADDRESSES.admin1,
     OWNER_ADDRESSES.admin2,
   ] as string[],
-  threshold: 3,
+  threshold: 2,
   saltNonce: "0",
 };
 

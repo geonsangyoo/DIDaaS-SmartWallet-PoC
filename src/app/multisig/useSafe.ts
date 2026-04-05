@@ -22,11 +22,12 @@ import { fetchPendingTxs, buildSafeClient, buildReadOnlySafeClient, deploySafe, 
 import type { SafeInfo, SafeTransaction, Role } from "./types";
 
 export function useSafe() {
-  const [safeInfo, setSafeInfo]       = useState<SafeInfo | null>(null);
-  const [fetchLoading, setFetchLoading] = useState(false);
-  const [actionLoading, setActionLoading] = useState(false);
-  const [error, setError]             = useState<string | null>(null);
-  const [success, setSuccess]         = useState<string | null>(null);
+  const [safeInfo, setSafeInfo]             = useState<SafeInfo | null>(null);
+  const [isEmployeeDelegate, setIsEmployeeDelegate] = useState<boolean>(false);
+  const [fetchLoading, setFetchLoading]     = useState(false);
+  const [actionLoading, setActionLoading]   = useState(false);
+  const [error, setError]                   = useState<string | null>(null);
+  const [success, setSuccess]               = useState<string | null>(null);
 
   const account                   = useActiveAccount();
   const { connect }               = useConnect();
@@ -36,6 +37,7 @@ export function useSafe() {
 
   const role: Role | null = account ? detectRole(account.address) : null;
 
+  // employee is not a Safe owner but their address is used as the expense recipient
   const ownersConfigured = !!(
     OWNER_ADDRESSES.employee &&
     OWNER_ADDRESSES.admin1   &&
@@ -52,6 +54,17 @@ export function useSafe() {
       const isDeployed = await isSafeRegistered(safeAddress);
       const pendingTransactions = isDeployed ? await fetchPendingTxs(safeAddress) : [];
       setSafeInfo({ safeAddress, isDeployed, pendingTransactions });
+
+      // Check if employee is registered as a delegate for this Safe
+      if (isDeployed && OWNER_ADDRESSES.employee) {
+        const delegates = await sc.apiKit.getSafeDelegates({
+          safeAddress,
+          delegateAddress: OWNER_ADDRESSES.employee,
+        });
+        setIsEmployeeDelegate(delegates.results.length > 0);
+      } else {
+        setIsEmployeeDelegate(false);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load Safe info");
     } finally {
@@ -110,6 +123,8 @@ export function useSafe() {
   };
 
   // ── ① Employee: propose expense reimbursement ────────────────────────────
+  // Employee is NOT a Safe owner — uses propose() to submit off-chain to the
+  // Safe Transaction Service. No gas required; admins sign and execute later.
   const handlePropose = async (amount: string) => {
     if (!activeWallet || !account) return;
     setActionLoading(true);
@@ -121,10 +136,12 @@ export function useSafe() {
         chain: sepolia,
         wallet: activeWallet,
       });
+      // signer = employee (non-owner); Safe TX Service accepts proposals from any address
       const safeClient = await buildSafeClient(walletClient, account.address);
       const amountWei = BigInt(Math.round(parseFloat(amount) * 1e18)).toString();
 
-      const result = await safeClient.send({
+      // Build the Safe transaction via protocolKit
+      const tx = await safeClient.protocolKit.createTransaction({
         transactions: [{
           to: OWNER_ADDRESSES.employee, // must be EIP-55 checksummed (stored as-is from env)
           value: amountWei,
@@ -132,10 +149,22 @@ export function useSafe() {
         }],
       });
 
+      // Off-chain: employee signs the safeTxHash with their EOA key and posts
+      // to the TX Service. Both admins must then confirm before execution.
+      const safeTxHash = await safeClient.protocolKit.getTransactionHash(tx);
+      const senderSignature = await safeClient.protocolKit.signHash(safeTxHash);
+      const safeAddress = await safeClient.protocolKit.getAddress();
+
+      await safeClient.apiKit.proposeTransaction({
+        safeAddress,
+        safeTransactionData: tx.data,
+        safeTxHash,
+        senderAddress: account.address,
+        senderSignature: senderSignature.data,
+      });
+
       setSuccess(
-        result.transactions?.ethereumTxHash
-          ? `✓ Executed immediately! TX: ${result.transactions.ethereumTxHash}`
-          : `✓ Expense request submitted! Awaiting 2 more approvals.\n  safeTxHash: ${result.transactions?.safeTxHash}`
+        `✓ Expense request submitted! Awaiting 2 admin approvals.\n  safeTxHash: ${safeTxHash}`
       );
       await refresh();
     } catch (err) {
@@ -182,6 +211,39 @@ export function useSafe() {
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Deployment failed");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // ── Add Employee as Delegate (one-time setup) ─────────────────────────────
+  // Allows the employee to propose transactions even though they're not an owner
+  const handleAddEmployeeDelegate = async () => {
+    if (!activeWallet || !account) return;
+    setActionLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const walletClient = viemAdapter.wallet.toViem({
+        client,
+        chain: sepolia,
+        wallet: activeWallet,
+      }) as any; // Type assertion to satisfy Safe SDK types
+      const safeClient = await buildSafeClient(walletClient, account.address);
+      const safeAddress = await safeClient.protocolKit.getAddress();
+
+      await safeClient.apiKit.addSafeDelegate({
+        safeAddress,
+        delegateAddress: OWNER_ADDRESSES.employee,
+        delegatorAddress: account.address,
+        label: "Employee",
+        signer: walletClient,
+      });
+
+      setSuccess(`✓ Employee added as delegate! They can now propose transactions.`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add employee delegate");
     } finally {
       setActionLoading(false);
     }
@@ -277,6 +339,7 @@ export function useSafe() {
   return {
     // State
     safeInfo,
+    isEmployeeDelegate,
     fetchLoading,
     actionLoading,
     error,
@@ -291,6 +354,7 @@ export function useSafe() {
     handleWalletConnect,
     handleDisconnect,
     handleDeploy,
+    handleAddEmployeeDelegate,
     handlePropose,
     handleConfirm,
     handleExecute,

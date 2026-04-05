@@ -12,6 +12,7 @@ import type { Role } from "./types";
 export default function MultisigPage() {
   const {
     safeInfo,
+    isEmployeeDelegate,
     fetchLoading,
     actionLoading,
     error,
@@ -24,6 +25,7 @@ export default function MultisigPage() {
     handleWalletConnect,
     handleDisconnect,
     handleDeploy,
+    handleAddEmployeeDelegate,
     handlePropose,
     handleConfirm,
     handleExecute,
@@ -41,7 +43,7 @@ export default function MultisigPage() {
             <Link href="/" className="text-zinc-500 hover:text-zinc-300 text-sm">← Home</Link>
             <h1 className="text-2xl font-bold mt-1">Multi-Sig PoC</h1>
             <p className="text-zinc-400 text-sm">
-              交通費精算 申請・承認フロー — 3-of-3 Gnosis Safe (Sepolia)
+              交通費精算 申請・承認フロー — 2-of-2 Gnosis Safe (Sepolia)
             </p>
           </div>
           <button
@@ -60,8 +62,8 @@ export default function MultisigPage() {
           <div className="border border-amber-700/50 rounded-xl p-4 bg-amber-900/10 text-sm space-y-2">
             <p className="text-amber-400 font-medium">Setup required</p>
             <p className="text-zinc-300">
-              Each of the 3 roles needs to log in with their Google account once.
-              Copy their ThirdWeb wallet address into <code className="text-zinc-200">.env.local</code>:
+              All 3 users need to log in with their Google account once (employee as proposer, admin1 and admin2 as Safe owners).
+              Copy their ThirdWeb wallet addresses into <code className="text-zinc-200">.env.local</code>:
             </p>
             <pre className="text-xs text-zinc-400 bg-zinc-900 rounded p-3 overflow-x-auto">{`NEXT_PUBLIC_EMPLOYEE_ADDRESS=0x...   # 社員 Google account wallet
 NEXT_PUBLIC_ADMIN1_ADDRESS=0x...     # 上長 Google account wallet
@@ -77,7 +79,7 @@ NEXT_PUBLIC_ADMIN2_ADDRESS=0x...     # 経理担当 Google account wallet`}</pre
         {safeInfo && (
           <div className="border border-zinc-800 rounded-xl p-4 bg-zinc-900/30 space-y-2">
             <p className="text-xs text-zinc-500 uppercase tracking-wider">
-              Gnosis Safe — Sepolia — Threshold 3/3
+              Gnosis Safe — Sepolia — Threshold 2/2
             </p>
             <div className="flex justify-between items-center">
               <span className="text-xs text-zinc-400">会社 SmartWallet (Safe)</span>
@@ -90,13 +92,22 @@ NEXT_PUBLIC_ADMIN2_ADDRESS=0x...     # 経理担当 Google account wallet`}</pre
                 {safeInfo.safeAddress}
               </a>
             </div>
-            {(["employee", "admin1", "admin2"] as Role[]).map((r) => (
+            {/* Employee: proposer only — not a Safe owner */}
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-blue-400">
+                {ROLE_CONFIG.employee.step} {ROLE_CONFIG.employee.labelJa} EOA
+                <span className="text-zinc-500 ml-1">(Proposer / Recipient)</span>
+              </span>
+              <span className="font-mono text-xs text-zinc-300">
+                {OWNER_ADDRESSES.employee || <span className="text-zinc-600 italic">not configured</span>}
+              </span>
+            </div>
+            {/* Admin1 and Admin2: Safe owners */}
+            {(["admin1", "admin2"] as Role[]).map((r) => (
               <div key={r} className="flex justify-between items-center">
-                <span className={`text-xs ${
-                  r === "employee" ? "text-blue-400" :
-                  r === "admin1"   ? "text-amber-400" : "text-green-400"
-                }`}>
+                <span className={`text-xs ${r === "admin1" ? "text-amber-400" : "text-green-400"}`}>
                   {ROLE_CONFIG[r].step} {ROLE_CONFIG[r].labelJa} EOA
+                  <span className="text-zinc-500 ml-1">(Owner)</span>
                 </span>
                 <span className="font-mono text-xs text-zinc-300">
                   {OWNER_ADDRESSES[r] || <span className="text-zinc-600 italic">not configured</span>}
@@ -124,7 +135,7 @@ NEXT_PUBLIC_ADMIN2_ADDRESS=0x...     # 経理担当 Google account wallet`}</pre
                 >
                   app.safe.global
                 </a>{" "}
-                (Sepolia, same 3 owners, threshold 3). Then paste the Safe address into{" "}
+                (Sepolia, owners: admin1 + admin2, threshold 2). Then paste the Safe address into{" "}
                 <code className="text-zinc-200">.env.local</code>:
               </p>
               <pre className="text-xs bg-zinc-900 rounded p-2 text-zinc-300">
@@ -197,7 +208,7 @@ NEXT_PUBLIC_ADMIN2_ADDRESS=0x...     # 経理担当 Google account wallet`}</pre
                 <p className="text-xs text-zinc-500 italic">
                   This address is not registered as a Safe owner.
                   {ownersConfigured
-                    ? " Connect with one of the 3 configured Google accounts."
+                    ? " Connect with one of the 2 admin Google accounts."
                     : " Configure NEXT_PUBLIC_*_ADDRESS env vars first."}
                 </p>
               )}
@@ -239,10 +250,12 @@ NEXT_PUBLIC_ADMIN2_ADDRESS=0x...     # 経理担当 Google account wallet`}</pre
             actionLoading={actionLoading}
             ownersConfigured={ownersConfigured}
             isSafeDeployed={safeInfo?.isDeployed ?? false}
+            isEmployeeDelegate={isEmployeeDelegate}
             accountAddress={account.address}
             onPropose={handlePropose}
             onConfirm={handleConfirm}
             onExecute={handleExecute}
+            onAddEmployeeDelegate={handleAddEmployeeDelegate}
           />
         )}
 
