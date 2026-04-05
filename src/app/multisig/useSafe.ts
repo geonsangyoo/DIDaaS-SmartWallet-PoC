@@ -179,7 +179,20 @@ export function useSafe() {
   // but that is fine for execution: execTransaction only verifies the collected
   // owner signatures on-chain — the caller (executor) can be anyone.
   // acc.address is passed as the Safe SDK's signer context for bookkeeping.
+  //
+  // Requires a ThirdWeb in-app wallet session (id === "inApp") — WalletConnect
+  // wallets have no stored ThirdWeb session for autoConnect, so the paymaster
+  // cannot be used. Gas-sponsored execution must be triggered by an account
+  // connected via Google (ThirdWeb in-app wallet).
   async function buildSponsoredClient(acc: NonNullable<typeof account>) {
+    if (activeWallet?.id !== "inApp") {
+      throw new Error(
+        "ガス代スポンサーにはThirdWebインアプリウォレット（Googleログイン）が必要です。\n" +
+        "WalletConnectウォレットではPaymasterが利用できません。\n" +
+        "Gas-sponsored execution requires a ThirdWeb in-app wallet (Google login). " +
+        "WalletConnect wallets cannot use the paymaster."
+      );
+    }
     const wallet = inAppWallet({
       executionMode: {
         mode: "EIP4337",
