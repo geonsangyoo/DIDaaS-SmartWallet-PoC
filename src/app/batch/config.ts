@@ -1,4 +1,8 @@
 // ── Batch Transaction Verification Config ────────────────────────────────────
+
+export const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
+
 //
 // Scenario: two ETH transfers batched into a single ERC-4337 UserOperation.
 //

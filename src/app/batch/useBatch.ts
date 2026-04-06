@@ -3,9 +3,6 @@
 import { useState } from "react";
 import { inAppWallet } from "thirdweb/wallets";
 import {
-  createSessionKey,
-} from "thirdweb/wallets/in-app";
-import {
   useConnect,
   useActiveAccount,
   useDisconnect,
@@ -18,8 +15,8 @@ import {
   waitForReceipt,
 } from "thirdweb";
 import { client } from "../client";
-import { BACKEND_URL } from "../multisig/config";
 import {
+  BACKEND_URL,
   BATCH_RECIPIENT_1,
   BATCH_RECIPIENT_2,
   BATCH_AMOUNT_1,
