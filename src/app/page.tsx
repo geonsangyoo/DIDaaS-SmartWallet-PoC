@@ -151,6 +151,13 @@ export default function Home() {
             Batch Tx Verification (バッチトランザクション検証) →
           </Link>
 
+          <Link
+            href="/recovery"
+            className="w-full max-w-sm py-2 px-4 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-500 transition-colors text-sm text-center"
+          >
+            Social Recovery / Guardian (鍵紛失からの復旧) →
+          </Link>
+
         {error && (
           <p className="text-red-400 text-sm bg-red-900/20 border border-red-800 rounded-lg px-4 py-2 w-full max-w-sm">
             {error}
