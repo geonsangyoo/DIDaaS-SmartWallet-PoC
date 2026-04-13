@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { inAppWallet, createWallet, walletConnect } from "thirdweb/wallets";
 import {
   useConnect,
@@ -9,53 +9,57 @@ import {
   useActiveWallet,
   useConnectModal,
 } from "thirdweb/react";
-import { viemAdapter } from "thirdweb/adapters/viem";
+import { getContract, sendTransaction, prepareContractCall, toWei } from "thirdweb";
+import { eth_getBalance, getRpcClient } from "thirdweb/rpc";
 import { sepolia } from "thirdweb/chains";
+import {
+  addAdmin,
+  removeAdmin,
+  getAllAdmins,
+} from "thirdweb/extensions/erc4337";
+import {
+  linkProfile,
+  getProfiles,
+  unlinkProfile,
+  preAuthenticate,
+} from "thirdweb/wallets";
 import { client } from "../client";
-import { BACKEND_URL, TX_SERVICE, RPC_URL, SAFE_API_KEY } from "../multisig/config";
+import { BACKEND_URL } from "../multisig/config";
 
-// Recovery Safe: a separate Safe with guardians as owners, threshold 1.
-// Create at app.safe.global (Sepolia, owners: guardian + admin1 "lost key", threshold: 1)
-// then set NEXT_PUBLIC_RECOVERY_SAFE_ADDRESS in .env.local.
-const RECOVERY_SAFE_ADDRESS = process.env.NEXT_PUBLIC_RECOVERY_SAFE_ADDRESS || "";
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-export interface RecoverySafeInfo {
-  safeAddress: string;
-  owners: string[];
-  threshold: number;
+export type RecoveryMode = "setup" | "recovery";
+
+export interface SmartAccountState {
+  address: string;
+  admins: readonly string[];
+  isDeployed: boolean;
 }
 
-function txServiceConfig() {
-  return SAFE_API_KEY
-    ? { apiKey: SAFE_API_KEY }
-    : { txServiceUrl: TX_SERVICE };
-}
+// Profile returned by getProfiles — shape: { type: string; details: { ... } }
+export type LinkedProfile = Awaited<ReturnType<typeof getProfiles>>[number];
 
-async function buildRecoverySafeClient(walletClient: any, signerAddress: string) {
-  const { createSafeClient } = await import("@safe-global/sdk-starter-kit");
-  return createSafeClient({
-    provider: walletClient,
-    signer: signerAddress,
-    safeAddress: RECOVERY_SAFE_ADDRESS,
-    ...txServiceConfig(),
-  });
-}
-
-async function buildReadOnlyRecoverySafeClient() {
-  const { createSafeClient } = await import("@safe-global/sdk-starter-kit");
-  return createSafeClient({
-    provider: RPC_URL,
-    safeAddress: RECOVERY_SAFE_ADDRESS,
-    ...txServiceConfig(),
-  });
-}
+// ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useRecovery() {
-  const [safeInfo, setSafeInfo]         = useState<RecoverySafeInfo | null>(null);
-  const [fetchLoading, setFetchLoading] = useState(false);
+  const [smartAccount, setSmartAccount] = useState<SmartAccountState | null>(null);
+  const [balance,      setBalance]      = useState<string | null>(null);
+  const [fetchLoading,  setFetchLoading]  = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const [error, setError]               = useState<string | null>(null);
-  const [success, setSuccess]           = useState<string | null>(null);
+  const [error,   setError]   = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  // ── Send-from-smart-account state (Panel ③) ──────────────────────────────
+  const [sendLoading, setSendLoading] = useState(false);
+  const [sendError,   setSendError]   = useState<string | null>(null);
+  const [sendSuccess, setSendSuccess] = useState<string | null>(null);
+
+  // ── Profile linking state (Section A) ─────────────────────────────────────
+  const [profiles,    setProfiles]    = useState<LinkedProfile[]>([]);
+  const [otpSent,     setOtpSent]     = useState(false);
+  const [linkLoading, setLinkLoading] = useState(false);
+  const [linkError,   setLinkError]   = useState<string | null>(null);
+  const [linkSuccess, setLinkSuccess] = useState<string | null>(null);
 
   const account                   = useActiveAccount();
   const { connect }               = useConnect();
@@ -63,28 +67,11 @@ export function useRecovery() {
   const activeWallet              = useActiveWallet();
   const { connect: openWalletUI } = useConnectModal();
 
-  const isConfigured = !!RECOVERY_SAFE_ADDRESS;
-
-  // ── Fetch Recovery Safe info (owners, threshold) ──────────────────────────
-  const refresh = useCallback(async () => {
-    if (!isConfigured) return;
-    setFetchLoading(true);
-    try {
-      const sc = await buildReadOnlyRecoverySafeClient();
-      const safeAddress = await sc.protocolKit.getAddress();
-      const owners      = await sc.protocolKit.getOwners();
-      const threshold   = await sc.protocolKit.getThreshold();
-      setSafeInfo({ safeAddress, owners, threshold });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load Recovery Safe info");
-    } finally {
-      setFetchLoading(false);
-    }
-  }, [isConfigured]);
-
-  useEffect(() => { refresh(); }, [refresh]);
-
-  // ── Google OAuth → ThirdWeb in-app wallet ────────────────────────────────
+  // ── Google OAuth → ERC-4337 Smart Account (Panel ① employee setup) ─────────
+  //
+  // account.address === Smart Account address (not the raw EOA).
+  // addAdmin called on the employee's OWN smart account:
+  //   isSelfVerifyingContract = true → raw EOA ECDSA signing → works ✓
   const handleGoogleLogin = async (idToken: string) => {
     setError(null);
     try {
@@ -95,12 +82,58 @@ export function useRecovery() {
       });
       const { jwt } = await res.json();
       await connect(async () => {
-        const wallet = inAppWallet();
+        const wallet = inAppWallet({
+          executionMode: {
+            mode: "EIP4337",
+            smartAccount: { chain: sepolia, sponsorGas: true },
+          },
+        });
         await wallet.connect({ client, strategy: "jwt", jwt, chain: sepolia });
         return wallet;
       });
     } catch {
       setError("Google login failed");
+    }
+  };
+
+  // ── Google OAuth → plain in-app wallet EOA (Panel ② guardian recovery) ────
+  //
+  // MUST use plain wallet (no ERC-4337) for guardian signing. Reason:
+  //
+  //   addAdmin calls signTypedData({ domain: { verifyingContract: employeeSmartAccount } })
+  //
+  //   ThirdWeb's smartAccountSignTypedData checks:
+  //     isSelfVerifyingContract = (verifyingContract === guardian's own smart account)
+  //
+  //   When guardian uses ERC-4337:
+  //     verifyingContract = employee's account ≠ guardian's account
+  //     → isSelfVerifyingContract = false
+  //     → signs with AccountMessage EIP-1271 wrapper
+  //     → employee's contract ecrecover gets the wrong address → "!sig" error
+  //
+  //   When guardian uses plain wallet:
+  //     account.address = guardian's EOA (0x4e2E9ce7…)
+  //     signTypedData = raw ECDSA from EOA
+  //     → employee's contract ecrecover = 0x4e2E9ce7… → isAdmin check passes ✓
+  const handleGuardianGoogleLogin = async (idToken: string) => {
+    setError(null);
+    try {
+      const res = await fetch(`${BACKEND_URL}/auth/google`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken }),
+      });
+      const { jwt } = await res.json();
+      await connect(async () => {
+        // Plain in-app wallet — NO executionMode → account.address = EOA
+        // Do NOT pass `chain` here: plain inAppWallet JWT connect schema does
+        // not accept it and Zod throws "Input validation failed".
+        const wallet = inAppWallet();
+        await wallet.connect({ client, strategy: "jwt", jwt });
+        return wallet;
+      });
+    } catch {
+      setError("Guardian Google login failed");
     }
   };
 
@@ -131,132 +164,294 @@ export function useRecovery() {
     if (activeWallet) disconnect(activeWallet);
   };
 
-  // ── Guardian Recovery: swapOwner (lostKey → newKey) ──────────────────────
-  //
-  // Prerequisites:
-  //   - Recovery Safe exists with owners = [guardian, lostKey], threshold = 1
-  //   - Guardian is connected (account.address === guardian address)
-  //
-  // Flow:
-  //   1. Create swapOwner Safe tx via protocolKit
-  //   2. Sign with guardian's EOA (activeWallet — not ERC-4337 to avoid EIP-1271 wrapping)
-  //   3. Propose to TX Service
-  //   4. Execute via ERC-4337 sponsored account (if inApp wallet) or normal EOA execution
-  //
-  // The ERC-4337 executor is separate from the Safe signer: Safe verifies the
-  // guardian's ECDSA signature on-chain, while anyone (including the smart account
-  // relayer) can call execTransaction as the executor.
-  const handleRecover = async (lostOwnerAddress: string, newOwnerAddress: string) => {
-    if (!activeWallet || !account) return;
-    if (!isConfigured) {
-      setError("NEXT_PUBLIC_RECOVERY_SAFE_ADDRESS is not configured");
-      return;
+  // ── Read admins + ETH balance from any smart account address ─────────────
+  const fetchAdmins = useCallback(async (smartAccountAddress: string) => {
+    if (!smartAccountAddress.startsWith("0x")) return;
+    setFetchLoading(true);
+    setError(null);
+    try {
+      const addr = smartAccountAddress as `0x${string}`;
+      const contract = getContract({ client, chain: sepolia, address: addr });
+      const rpc = getRpcClient({ client, chain: sepolia });
+      const [admins, wei] = await Promise.all([
+        getAllAdmins({ contract }),
+        eth_getBalance(rpc, { address: addr }),
+      ]);
+      setSmartAccount({ address: smartAccountAddress, admins, isDeployed: admins.length > 0 });
+      setBalance((Number(wei) / 1e18).toFixed(6));
+    } catch {
+      // Contract not deployed yet or not a ThirdWeb smart account
+      setSmartAccount({ address: smartAccountAddress, admins: [], isDeployed: false });
+      setBalance(null);
+    } finally {
+      setFetchLoading(false);
     }
+  }, []);
+
+  // ── ① SETUP: Account owner adds a guardian (addAdmin) ─────────────────────
+  //
+  // Who calls this: Alice (the account owner / initial admin)
+  // What it does:
+  //   1. account.signTypedData → signs a SignerPermissionRequest (typed-data EIP-712)
+  //   2. setPermissionsForSigner(req, signature) is sent to Alice's smart account
+  //   3. Contract verifies: ecrecover(hash(req), sig) === existing admin
+  //   4. Grants admin role to guardianAddress
+  //
+  // Gas: sponsored via ERC-4337 Paymaster (Google in-app wallet with EIP4337 mode).
+  const handleAddGuardian = async (guardianAddress: string) => {
+    if (!account) return;
     setActionLoading(true);
     setError(null);
     setSuccess(null);
     try {
-      // Step 1: Build safe client from the EOA wallet for signing
-      const walletClient = viemAdapter.wallet.toViem({
+      const contract = getContract({
         client,
         chain: sepolia,
-        wallet: activeWallet,
+        address: account.address as `0x${string}`,
       });
-      const safeClient = await buildRecoverySafeClient(walletClient as any, account.address);
-
-      // Step 2: Create the swapOwner tx (protocolKit auto-resolves prevOwner)
-      const swapOwnerTx = await safeClient.protocolKit.createSwapOwnerTx({
-        oldOwnerAddress: lostOwnerAddress,
-        newOwnerAddress,
-      });
-
-      const safeTxHash   = await safeClient.protocolKit.getTransactionHash(swapOwnerTx);
-      const signature    = await safeClient.protocolKit.signHash(safeTxHash);
-      const safeAddress  = await safeClient.protocolKit.getAddress();
-
-      // Step 3: Propose to TX Service
-      await safeClient.apiKit.proposeTransaction({
-        safeAddress,
-        safeTransactionData: swapOwnerTx.data,
-        safeTxHash,
-        senderAddress:   account.address,
-        senderSignature: signature.data,
-      });
-
-      // Step 4: Execute
-      // threshold = 1 → guardian's single signature meets threshold → execute now.
-      if (activeWallet.id === "inApp") {
-        // Gas-sponsored execution via ERC-4337 (requires ThirdWeb in-app wallet session)
-        const sponsoredWallet = inAppWallet({
-          executionMode: {
-            mode: "EIP4337",
-            smartAccount: { chain: sepolia, sponsorGas: true },
-          },
-        });
-        await sponsoredWallet.autoConnect({ client, chain: sepolia });
-        const sponsoredWalletClient = viemAdapter.wallet.toViem({
-          client,
-          chain: sepolia,
-          wallet: sponsoredWallet,
-        });
-        const sponsoredSafeClient = await buildRecoverySafeClient(
-          sponsoredWalletClient as any,
-          account.address,
-        );
-        const result      = await sponsoredSafeClient.confirm({ safeTxHash });
-        const execTxHash  = result.transactions?.ethereumTxHash;
-
-        if (execTxHash) {
-          setSuccess(
-            `✓ Recovery executed (gas sponsored)!\n` +
-            `  TX: ${execTxHash}\n` +
-            `  Lost key  : ${lostOwnerAddress}\n` +
-            `  New key   : ${newOwnerAddress}\n` +
-            `  The Recovery Safe owners list has been updated on-chain.`
-          );
-          // Refresh after block confirmation (TX service may lag)
-          setTimeout(() => refresh(), 3000);
-        } else {
-          setSuccess(`Recovery submitted. Status: ${result.status}`);
-        }
-      } else {
-        // WalletConnect: guardian just proposed; confirm in Safe app or re-run with a signer
-        setSuccess(
-          `✓ Recovery transaction proposed!\n` +
-          `  safeTxHash: ${safeTxHash}\n` +
-          `  The Recovery Safe threshold is 1 — your signature already qualifies.\n` +
-          `  Open app.safe.global to execute, or reconnect with Google login for gas-sponsored execution.`
-        );
-      }
-
-      await refresh();
+      const tx = addAdmin({ contract, account, adminAddress: guardianAddress });
+      const receipt = await sendTransaction({ transaction: tx, account });
+      setSuccess(
+        `✓ Guardian を登録しました！\n` +
+        `  TX: ${receipt.transactionHash}\n` +
+        `  Smart Account  : ${account.address}\n` +
+        `  Guardian (新Admin): ${guardianAddress}\n\n` +
+        `  Guardian は今後このスマートアカウントの Admin として\n` +
+        `  Recovery を実行できます。`
+      );
+      await fetchAdmins(account.address);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Recovery failed");
+      setError(err instanceof Error ? err.message : "Guardian の追加に失敗しました");
     } finally {
       setActionLoading(false);
     }
   };
 
-  // ── Check if connected wallet is a guardian (owner of Recovery Safe) ──────
-  const isGuardian =
+  // ── ② RECOVERY: Guardian adds new key + removes lost key ─────────────────
+  //
+  // Who calls this: Bob (the guardian / existing admin)
+  // What it does (2-step):
+  //   Step 1 — addAdmin(newKey) on Alice's smart account:
+  //     Bob signs a SignerPermissionRequest(signer=newKey, isAdmin=1)
+  //     setPermissionsForSigner is called → newKey becomes admin
+  //   Step 2 — removeAdmin(lostKey) on Alice's smart account:
+  //     Bob signs a SignerPermissionRequest(signer=lostKey, isAdmin=2)
+  //     setPermissionsForSigner is called → lostKey loses admin
+  //
+  // Neither step requires the lost key's signature — guardian acts alone.
+  const handleRecover = async (
+    smartAccountAddress: string,
+    lostKeyAddress:      string,
+    newKeyAddress:       string,
+    skipRemove:          boolean = false,
+  ) => {
+    if (!account) return;
+    setActionLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    const contract = getContract({
+      client,
+      chain: sepolia,
+      address: smartAccountAddress as `0x${string}`,
+    });
+
+    try {
+      // ── Step 1: Add new key as admin ───────────────────────────────────────
+      const addTx = addAdmin({ contract, account, adminAddress: newKeyAddress });
+      const addReceipt = await sendTransaction({ transaction: addTx, account });
+
+      let msg =
+        `✓ 新しい鍵を Admin に追加しました！\n` +
+        `  TX (addAdmin)  : ${addReceipt.transactionHash}\n` +
+        `  Smart Account  : ${smartAccountAddress}\n` +
+        `  新 Admin (復旧先): ${newKeyAddress}\n`;
+
+      // ── Step 2: Remove lost key (optional) ────────────────────────────────
+      if (!skipRemove && lostKeyAddress && lostKeyAddress !== newKeyAddress) {
+        const removeTx = removeAdmin({ contract, account, adminAddress: lostKeyAddress });
+        const removeReceipt = await sendTransaction({ transaction: removeTx, account });
+        msg +=
+          `\n✓ 紛失した鍵を削除しました！\n` +
+          `  TX (removeAdmin): ${removeReceipt.transactionHash}\n` +
+          `  旧 Admin (紛失)  : ${lostKeyAddress}`;
+      }
+
+      setSuccess(msg);
+      await fetchAdmins(smartAccountAddress);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Recovery に失敗しました");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // ── ③ Send ETH from an arbitrary smart account (admin is the executor) ────
+  //
+  // How it works:
+  //   The connected EOA (e.g. 0xd00A23E1) is a registered Admin on the employee's
+  //   smart account. ThirdWeb's ManagedAccount exposes:
+  //
+  //     execute(address _target, uint256 _value, bytes calldata _calldata)
+  //       onlyAdminOrEntrypoint
+  //
+  //   Calling execute() directly (not via EntryPoint) skips UserOperation
+  //   signature validation entirely — the contract checks msg.sender == admin.
+  //
+  //   Note on gas: the admin EOA pays gas for this call. The UserOperation
+  //   path (smartWallet + overrides.accountAddress) fails because ThirdWeb
+  //   appends signer metadata to the UserOp signature, making it > 65 bytes,
+  //   which breaks the employee contract's ECDSA.recover() length check (AA23).
+  const handleSendFromEmployeeWallet = async (
+    smartAccountAddress: string,
+    toAddress: string,
+    amountEth: string,
+  ) => {
+    if (!account) return;
+    setSendLoading(true);
+    setSendError(null);
+    setSendSuccess(null);
+    try {
+      const contract = getContract({
+        client,
+        chain: sepolia,
+        address: smartAccountAddress as `0x${string}`,
+      });
+      // Call execute() as the admin EOA — msg.sender is checked against admin list.
+      const tx = prepareContractCall({
+        contract,
+        method: "function execute(address _target, uint256 _value, bytes calldata _calldata)",
+        params: [toAddress as `0x${string}`, toWei(amountEth), "0x"],
+      });
+      const receipt = await sendTransaction({ transaction: tx, account });
+      setSendSuccess(
+        `✓ 送金完了！\n` +
+        `  TX: ${receipt.transactionHash}\n` +
+        `  送金元 (Smart Account): ${smartAccountAddress}\n` +
+        `  送金先               : ${toAddress}\n` +
+        `  金額                 : ${amountEth} ETH`,
+      );
+      await fetchAdmins(smartAccountAddress);
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "送金に失敗しました");
+    } finally {
+      setSendLoading(false);
+    }
+  };
+
+  // ── Section A: fetch currently linked profiles ────────────────────────────
+  const handleFetchProfiles = useCallback(async () => {
+    setLinkLoading(true);
+    setLinkError(null);
+    try {
+      const list = await getProfiles({ client });
+      setProfiles(list);
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : "プロフィール取得に失敗しました");
+    } finally {
+      setLinkLoading(false);
+    }
+  }, []);
+
+  // ── Section A: send SMS OTP for phone linking ─────────────────────────────
+  // Must be called while an in-app wallet is already connected.
+  const handleSendOtp = async (phoneNumber: string) => {
+    setLinkLoading(true);
+    setLinkError(null);
+    setLinkSuccess(null);
+    try {
+      await preAuthenticate({ client, strategy: "phone", phoneNumber });
+      setOtpSent(true);
+      setLinkSuccess(`OTP を ${phoneNumber} に送信しました`);
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : "OTP 送信に失敗しました");
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
+  // ── Section A: link phone number to the connected wallet ─────────────────
+  // linkProfile attaches a new auth method to the currently signed-in account.
+  // After this call the user can log in with either Google OR phone OTP and
+  // always arrive at the same wallet address.
+  const handleLinkPhone = async (phoneNumber: string, verificationCode: string) => {
+    setLinkLoading(true);
+    setLinkError(null);
+    setLinkSuccess(null);
+    try {
+      const updated = await linkProfile({ client, strategy: "phone", phoneNumber, verificationCode });
+      setProfiles(updated);
+      setOtpSent(false);
+      setLinkSuccess(
+        `✓ 電話番号 ${phoneNumber} を紐付けました！\n` +
+        `  Google または SMS OTP のどちらでログインしても同じアドレスに復旧できます。`
+      );
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : "電話番号の紐付けに失敗しました");
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
+  // ── Section A: unlink a profile ───────────────────────────────────────────
+  const handleUnlinkProfile = async (profile: LinkedProfile) => {
+    setLinkLoading(true);
+    setLinkError(null);
+    setLinkSuccess(null);
+    try {
+      const updated = await unlinkProfile({ client, profileToUnlink: profile });
+      setProfiles(updated);
+      setLinkSuccess(`✓ プロフィールを削除しました`);
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : "プロフィールの削除に失敗しました");
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  const isAdminOf = (smartAcctAddress: string): boolean =>
     !!account &&
-    !!safeInfo &&
-    safeInfo.owners.some((o) => o.toLowerCase() === account.address.toLowerCase());
+    !!smartAccount &&
+    smartAccount.address.toLowerCase() === smartAcctAddress.toLowerCase() &&
+    smartAccount.admins.some((a) => a.toLowerCase() === account.address.toLowerCase());
 
   return {
-    safeInfo,
-    isConfigured,
-    isGuardian,
+    // Section B state
+    smartAccount,
+    balance,
     fetchLoading,
     actionLoading,
     error,
     success,
+    // Section A profile state
+    profiles,
+    otpSent,
+    linkLoading,
+    linkError,
+    linkSuccess,
+    // Shared wallet state
     account,
     activeWallet,
-    refresh,
+    // Section B actions
+    fetchAdmins,
     handleGoogleLogin,
+    handleGuardianGoogleLogin,
     handleWalletConnect,
     handleDisconnect,
+    handleAddGuardian,
     handleRecover,
+    handleSendFromEmployeeWallet,
+    sendLoading,
+    sendError,
+    sendSuccess,
+    isAdminOf,
+    // Section A actions
+    handleFetchProfiles,
+    handleSendOtp,
+    handleLinkPhone,
+    handleUnlinkProfile,
+    setOtpSent,
   };
 }

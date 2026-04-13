@@ -35,9 +35,13 @@ const privateKey = await importPKCS8(privateKeyPem.replace(/\\n/g, "\n"), "RS256
 const publicKey = await importSPKI(publicKeyPem.replace(/\\n/g, "\n"), "RS256", { extractable: true });
 const publicKeyJwk = await exportJWK(publicKey);
 
-// Used to verify the Google ID token before issuing our own JWT
+// Used to verify the Google ID token before issuing our own JWT.
+// timeoutDuration: 30 s (default 5 s is too short on slow connections).
+// cacheMaxAge: 1 h  — Google rotates certs every few days, so 1 h is safe
+//              and avoids a network round-trip on every auth request.
 const googleJWKS = createRemoteJWKSet(
-  new URL("https://www.googleapis.com/oauth2/v3/certs")
+  new URL("https://www.googleapis.com/oauth2/v3/certs"),
+  { timeoutDuration: 30_000, cacheMaxAge: 3_600_000 }
 );
 
 // ── JWKS endpoint ─────────────────────────────────────────────────────────────

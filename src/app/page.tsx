@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { GoogleLogin } from "@react-oauth/google";
 import { inAppWallet, preAuthenticate } from "thirdweb/wallets";
+import { sepolia } from "thirdweb/chains";
 import { useConnect, useActiveWallet, useDisconnect, useActiveAccount } from "thirdweb/react";
 import { client } from "./client";
 
@@ -45,7 +46,12 @@ export default function Home() {
       // Step 2: pass our custom JWT to thirdweb
       //         thirdweb verifies it against our /.well-known/jwks.json
       await connect(async () => {
-        const wallet = inAppWallet();
+        const wallet = inAppWallet({
+          executionMode: {
+            mode: "EIP4337",
+            smartAccount: { chain: sepolia, sponsorGas: true },
+          },  
+        });
         await wallet.connect({ client, strategy: "jwt", jwt });
         return wallet;
       });
@@ -75,7 +81,12 @@ export default function Home() {
     setError(null);
     try {
       await connect(async () => {
-        const wallet = inAppWallet();
+        const wallet = inAppWallet({
+          executionMode: {
+            mode: "EIP4337",
+            smartAccount: { chain: sepolia, sponsorGas: true },
+          },  
+        });
         await wallet.connect({ client, strategy: "phone", phoneNumber, verificationCode: otpCode });
         return wallet;
       });
