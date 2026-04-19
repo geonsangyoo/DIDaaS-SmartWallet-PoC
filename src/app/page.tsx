@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { GoogleLogin } from "@react-oauth/google";
 import { inAppWallet, preAuthenticate } from "thirdweb/wallets";
 import { sepolia } from "thirdweb/chains";
 import { useConnect, useActiveWallet, useDisconnect, useActiveAccount } from "thirdweb/react";
 import { client } from "./client";
+
+const IN_APP_WALLET_BASE_URL = "https://embedded-wallet.thirdweb.com";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
 
@@ -19,10 +21,42 @@ export default function Home() {
   const [otpCode, setOtpCode] = useState("");
   const [otpSent, setOtpSent] = useState(false);
 
+  const [showExportKey, setShowExportKey] = useState(false);
+  const [iframeLoading, setIframeLoading] = useState(true);
+
   const { connect } = useConnect();
   const activeWallet = useActiveWallet();
   const account = useActiveAccount();
   const { disconnect } = useDisconnect();
+
+  // ── Private key export via Thirdweb iframe ────────────────────────────────
+  useEffect(() => {
+    if (!showExportKey) return;
+
+    const handleMessage = async (e: MessageEvent<{ eventType: string }>) => {
+      if (
+        typeof e.data !== "object" ||
+        !("eventType" in e.data) ||
+        e.origin !== IN_APP_WALLET_BASE_URL
+      ) return;
+
+      if (e.data.eventType === "exportPrivateKeyIframeLoaded") {
+        const iframe = document.getElementById("export-private-key-iframe") as HTMLIFrameElement | null;
+        if (!iframe?.contentWindow || !activeWallet) return;
+
+        const wallet = activeWallet as typeof activeWallet & { getAuthToken?: () => string | null };
+        const authToken = wallet.getAuthToken?.() ?? null;
+
+        iframe.contentWindow.postMessage(
+          { authToken, eventType: "initExportPrivateKey" },
+          e.origin,
+        );
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [showExportKey, activeWallet]);
 
   // ── Strategy: jwt ─────────────────────────────────────────────────────────────
   // googleIdToken  = signed by Google's private key (proves the user authenticated with Google)
@@ -133,12 +167,70 @@ export default function Home() {
           </div>
 
           <button
+            onClick={() => { setIframeLoading(true); setShowExportKey(true); }}
+            className="px-6 py-2 rounded-lg border border-yellow-700 text-yellow-300 hover:bg-yellow-900/30 transition-colors text-sm"
+          >
+            Export Private Key
+          </button>
+
+          <button
             onClick={() => activeWallet && disconnect(activeWallet)}
-            className="mt-4 px-6 py-2 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors text-sm"
+            className="px-6 py-2 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors text-sm"
           >
             Disconnect
           </button>
         </div>
+
+        {/* Export Private Key Modal */}
+        {showExportKey && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+            onClick={(e) => { if (e.target === e.currentTarget) setShowExportKey(false); }}
+          >
+            <div className="bg-zinc-900 border border-zinc-700 rounded-xl w-full max-w-sm mx-4 overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-700">
+                <h2 className="text-sm font-medium text-zinc-200">Export Private Key</h2>
+                <button
+                  onClick={() => setShowExportKey(false)}
+                  className="text-zinc-500 hover:text-zinc-300 text-lg leading-none"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="relative" style={{ height: 280 }}>
+                {iframeLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-6 h-6 border-2 border-zinc-600 border-t-zinc-300 rounded-full animate-spin" />
+                  </div>
+                )}
+                <iframe
+                  allow="clipboard-read; clipboard-write"
+                  id="export-private-key-iframe"
+                  onLoad={() => setIframeLoading(false)}
+                  src={`${IN_APP_WALLET_BASE_URL}/sdk/2022-08-12/embedded-wallet/export-private-key?clientId=${client.clientId}&theme=dark`}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    border: "none",
+                    visibility: iframeLoading ? "hidden" : "visible",
+                  }}
+                  title="Export Private Key"
+                />
+              </div>
+              <div className="px-5 py-4 border-t border-zinc-800 bg-zinc-950/60 text-left space-y-2">
+                <p className="text-xs font-medium text-yellow-400">How to import into MetaMask</p>
+                <ol className="text-xs text-zinc-400 list-decimal list-inside space-y-1">
+                  <li>Open MetaMask → top-right menu → <span className="text-zinc-200">Import Account</span></li>
+                  <li>Select type: <span className="text-zinc-200">Private Key</span> (not Secret Recovery Phrase)</li>
+                  <li>Paste the key copied above and click Import</li>
+                </ol>
+                <p className="text-xs text-zinc-500 pt-1">
+                  Note: this key controls the underlying EOA signer, whose address differs from the smart account address shown above.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     );
   }
