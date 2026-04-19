@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { inAppWallet, createWallet, walletConnect } from "thirdweb/wallets";
+import { inAppWallet, smartWallet, createWallet, walletConnect } from "thirdweb/wallets";
 import {
   useConnect,
   useActiveAccount,
@@ -85,6 +85,9 @@ export function useSafe() {
       });
       const { jwt } = await res.json();
       await connect(async () => {
+        // Plain EOA — NO executionMode. Safe signing and Safe TX Service APIs
+        // (signTransaction, addSafeDelegate) require raw ECDSA from the owner
+        // EOA. Gas-sponsored execution is handled separately in buildSponsoredClient.
         const wallet = inAppWallet();
         await wallet.connect({ client, strategy: "jwt", jwt, chain: sepolia });
         return wallet;
@@ -180,27 +183,31 @@ export function useSafe() {
   // owner signatures on-chain — the caller (executor) can be anyone.
   // acc.address is passed as the Safe SDK's signer context for bookkeeping.
   //
-  // Requires a ThirdWeb in-app wallet session (id === "inApp") — WalletConnect
-  // wallets have no stored ThirdWeb session for autoConnect, so the paymaster
-  // cannot be used. Gas-sponsored execution must be triggered by an account
-  // connected via Google (ThirdWeb in-app wallet).
+  // Supports any wallet type (inApp or external EoA via WalletConnect/MetaMask):
+  // - inApp: reconnects the stored session with EIP4337 mode via autoConnect
+  // - external EoA: wraps the current account in a smartWallet (ERC-4337) so
+  //   ThirdWeb's paymaster sponsors the gas regardless of wallet type
   async function buildSponsoredClient(acc: NonNullable<typeof account>) {
-    if (activeWallet?.id !== "inApp") {
-      throw new Error(
-        "ガス代スポンサーにはThirdWebインアプリウォレット（Googleログイン）が必要です。\n" +
-        "WalletConnectウォレットではPaymasterが利用できません。\n" +
-        "Gas-sponsored execution requires a ThirdWeb in-app wallet (Google login). " +
-        "WalletConnect wallets cannot use the paymaster."
-      );
+    if (activeWallet?.id === "inApp") {
+      // inApp wallet: reconnect with EIP4337 execution mode
+      const wallet = inAppWallet({
+        executionMode: {
+          mode: "EIP4337",
+          smartAccount: { chain: sepolia, sponsorGas: true },
+        },
+      });
+      await wallet.autoConnect({ client, chain: sepolia });
+      const walletClient = viemAdapter.wallet.toViem({ client, chain: sepolia, wallet });
+      return buildSafeClient(walletClient, acc.address);
     }
-    const wallet = inAppWallet({
-      executionMode: {
-        mode: "EIP4337",
-        smartAccount: { chain: sepolia, sponsorGas: true },
-      },
-    });
-    await wallet.autoConnect({ client, chain: sepolia });
-    const walletClient = viemAdapter.wallet.toViem({ client, chain: sepolia, wallet });
+
+    // External EoA (WalletConnect, MetaMask, Coinbase, etc.):
+    // wrap the current EOA account in a smartWallet for gas-sponsored execution.
+    // The underlying EOA is still used for Safe owner signature verification;
+    // only the on-chain execTransaction call is sent from the smart account.
+    const sw = smartWallet({ chain: sepolia, sponsorGas: true });
+    await sw.connect({ client, personalAccount: acc });
+    const walletClient = viemAdapter.wallet.toViem({ client, chain: sepolia, wallet: sw });
     return buildSafeClient(walletClient, acc.address);
   }
 
@@ -211,14 +218,22 @@ export function useSafe() {
     setError(null);
     setSuccess(null);
     try {
-      const wallet = inAppWallet({
-        executionMode: {
-          mode: "EIP4337",
-          smartAccount: { chain: sepolia, sponsorGas: true },
-        },
-      });
-      await wallet.autoConnect({ client, chain: sepolia });
-      const walletClient = viemAdapter.wallet.toViem({ client, chain: sepolia, wallet });
+      let walletClient;
+      if (activeWallet?.id === "inApp") {
+        const wallet = inAppWallet({
+          executionMode: {
+            mode: "EIP4337",
+            smartAccount: { chain: sepolia, sponsorGas: true },
+          },
+        });
+        await wallet.autoConnect({ client, chain: sepolia });
+        walletClient = viemAdapter.wallet.toViem({ client, chain: sepolia, wallet });
+      } else {
+        // External EoA: wrap in smartWallet for gas-sponsored deployment
+        const sw = smartWallet({ chain: sepolia, sponsorGas: true });
+        await sw.connect({ client, personalAccount: account });
+        walletClient = viemAdapter.wallet.toViem({ client, chain: sepolia, wallet: sw });
+      }
       const txHash = await deploySafe(walletClient, account.address);
       setSuccess(`Safe deployed (gas sponsored)! TX: ${txHash}\nWaiting for confirmation…`);
       await refresh();
@@ -230,7 +245,9 @@ export function useSafe() {
   };
 
   // ── Add Employee as Delegate (one-time setup) ─────────────────────────────
-  // Allows the employee to propose transactions even though they're not an owner
+  // Allows the employee to propose transactions even though they're not an owner.
+  // Both inApp and external EOA wallets produce raw ECDSA here because
+  // handleGoogleLogin connects as plain EOA (no EIP4337 executionMode).
   const handleAddEmployeeDelegate = async () => {
     if (!activeWallet || !account) return;
     setActionLoading(true);
@@ -241,7 +258,7 @@ export function useSafe() {
         client,
         chain: sepolia,
         wallet: activeWallet,
-      }) as any; // Type assertion to satisfy Safe SDK types
+      }) as any;
       const safeClient = await buildSafeClient(walletClient, account.address);
       const safeAddress = await safeClient.protocolKit.getAddress();
 
