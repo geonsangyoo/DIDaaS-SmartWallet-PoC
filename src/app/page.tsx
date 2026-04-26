@@ -261,6 +261,13 @@ export default function Home() {
             Social Recovery / Guardian (鍵紛失からの復旧) →
           </Link>
 
+          <Link
+            href="/session-key"
+            className="w-full max-w-sm py-2 px-4 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-500 transition-colors text-sm text-center"
+          >
+            Session Key (権限移譲・別クライアントTx実行) →
+          </Link>
+
         {error && (
           <p className="text-red-400 text-sm bg-red-900/20 border border-red-800 rounded-lg px-4 py-2 w-full max-w-sm">
             {error}
