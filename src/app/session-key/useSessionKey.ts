@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { inAppWallet, smartWallet } from "thirdweb/wallets";
-import { DEFAULT_ACCOUNT_FACTORY_V0_7 } from "thirdweb/wallets/smart";
 import type { Account } from "thirdweb/wallets";
 import {
   useConnect,
@@ -11,7 +10,13 @@ import {
   useActiveWallet,
 } from "thirdweb/react";
 import { sepolia } from "thirdweb/chains";
-import { prepareTransaction, sendTransaction } from "thirdweb";
+import {
+  getContract,
+  prepareTransaction,
+  sendTransaction,
+  sendAndConfirmTransaction,
+} from "thirdweb";
+import { addSessionKey } from "thirdweb/extensions/erc4337";
 import { client } from "../client";
 import {
   BACKEND_URL,
@@ -26,7 +31,9 @@ import {
 export type SessionKeyStep =
   | "idle"
   | "connecting"
-  | "ready"
+  | "connected"       // wallet connected, session key not yet granted
+  | "granting"        // addSessionKey tx in progress
+  | "ready"           // grant complete (owner) or linked to owner SA (delegate)
   | "link-connecting"
   | "executing"
   | "done"
@@ -36,14 +43,11 @@ export function useSessionKey() {
   const [step, setStep] = useState<SessionKeyStep>("idle");
   const [error, setError] = useState<string | null>(null);
   const [execTxHash, setExecTxHash] = useState<string | null>(null);
-  // Delegate's session account — points to the owner's smart wallet
   const [sessionAccount, setSessionAccount] = useState<Account | null>(null);
 
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
   const activeWallet = useActiveWallet();
-  // Owner flow  → smart account  (smartWallet is the active wallet)
-  // Delegate flow → EOA          (plain inAppWallet is the active wallet)
   const account = useActiveAccount();
 
   const configured = !!(DELEGATE_ADDRESS && RECIPIENT_ADDRESS);
@@ -59,18 +63,7 @@ export function useSessionKey() {
     return jwt;
   };
 
-  // ── Owner: connect smart wallet with sessionKey option ────────────────────
-  //
-  // Guide: https://portal.thirdweb.com/engine/v3/guides/session-keys  (Step 1–2)
-  //
-  // Key insight: passing `sessionKey` to smartWallet() makes the SDK register
-  // the session key automatically during connect(), using personalAccount (EOA)
-  // internally — NOT the smart account.  The EOA is the admin, so
-  // setPermissionsForSigner passes the isAdmin(msg.sender) check.
-  //
-  // The previous approach (manually calling addSessionKey with account = smart
-  // account) failed because msg.sender in the contract was the smart account
-  // address, which is not in the admin set.
+  // ── Owner: connect to existing smart wallet (default factory) ─────────────
   const handleOwnerConnect = async (idToken: string) => {
     setError(null);
     setStep("connecting");
@@ -78,7 +71,6 @@ export function useSessionKey() {
       const jwt = await getJwt(idToken);
 
       const connectedWallet = await connect(async () => {
-        // Step 1 (guide): personal account — the admin signer
         const eoaWallet = inAppWallet();
         const personalAccount = await eoaWallet.connect({
           client,
@@ -87,47 +79,59 @@ export function useSessionKey() {
           chain: sepolia,
         });
 
-        // Step 2 (guide): smartWallet with sessionKey — SDK auto-registers
-        // the delegate address as a session key signer on connect()
-        const sw = smartWallet({
-          chain: sepolia,
-          factoryAddress: DEFAULT_ACCOUNT_FACTORY_V0_7,
-          sessionKey: {
-            address: DELEGATE_ADDRESS,
-            permissions: {
-              approvedTargets: "*",
-              nativeTokenLimitPerTransaction: parseFloat(AMOUNT_DISPLAY),
-              permissionStartTimestamp: new Date(),
-              permissionEndTimestamp: new Date(Date.now() + SESSION_DURATION_MS),
-            },
-          },
-          sponsorGas: true,
-        });
-
-        // Step 3 (guide): connect — session key registration happens here
+        const sw = smartWallet({ chain: sepolia, sponsorGas: true });
         await sw.connect({ client, personalAccount });
-        return sw; // smart wallet becomes the active wallet
+        return sw;
       });
 
-      // Save smart account address so the Delegate tab can pre-fill it
       const smartAcc = connectedWallet?.getAccount();
       if (smartAcc && typeof window !== "undefined") {
         localStorage.setItem(OWNER_ADDR_STORAGE_KEY, smartAcc.address);
       }
 
-      setStep("ready");
+      setStep("connected");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Connection failed");
       setStep("error");
     }
   };
 
-  // ── Delegate: connect EOA → link to owner's smart wallet as session key ───
+  // ── Owner: grant session key to delegate via addSessionKey extension ───────
   //
-  // Guide Step 4 uses Engine.serverWallet (server-side). For a frontend PoC,
-  // we use smartWallet with overrides.accountAddress — the client-side
-  // equivalent: the SDK signs UserOps with the delegate EOA (the registered
-  // session key) and submits them targeting the owner's smart account.
+  // account = useActiveAccount() → smart account whose signTypedData delegates
+  // to the underlying EOA.  The contract recovers the EOA and checks isAdmin(EOA).
+  const handleGrantSessionKey = async () => {
+    if (!account) return;
+    setError(null);
+    setStep("granting");
+    try {
+      const smartAccountContract = getContract({
+        client,
+        chain: sepolia,
+        address: account.address,
+      });
+
+      const tx = addSessionKey({
+        contract: smartAccountContract,
+        account,
+        sessionKeyAddress: DELEGATE_ADDRESS as `0x${string}`,
+        permissions: {
+          approvedTargets: "*",
+          nativeTokenLimitPerTransaction: parseFloat(AMOUNT_DISPLAY),
+          permissionStartTimestamp: new Date(),
+          permissionEndTimestamp: new Date(Date.now() + SESSION_DURATION_MS),
+        },
+      });
+
+      await sendAndConfirmTransaction({ account, transaction: tx });
+      setStep("ready");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Grant failed");
+      setStep("error");
+    }
+  };
+
+  // ── Delegate: connect EOA → link to owner's smart wallet as session key ───
   const handleDelegateConnect = async (idToken: string, ownerAddr: string) => {
     setError(null);
     setStep("connecting");
@@ -136,7 +140,6 @@ export function useSessionKey() {
 
       const jwt = await getJwt(idToken);
 
-      // Connect delegate's plain EOA (the address registered as session key)
       const connectedWallet = await connect(async () => {
         const wallet = inAppWallet();
         await wallet.connect({ client, strategy: "jwt", jwt, chain: sepolia });
@@ -146,7 +149,6 @@ export function useSessionKey() {
       const delegateEOA = connectedWallet?.getAccount();
       if (!delegateEOA) throw new Error("Failed to get delegate EOA");
 
-      // Link to owner's smart account — delegate EOA acts as session key signer
       setStep("link-connecting");
       const ownerSessionWallet = smartWallet({
         chain: sepolia,
@@ -168,7 +170,6 @@ export function useSessionKey() {
   };
 
   // ── Delegate: execute ETH transfer from owner's smart account ─────────────
-  // Guide Step 5: sendTransaction with the session account
   const executeTransfer = async () => {
     if (!sessionAccount || !RECIPIENT_ADDRESS) return;
     setError(null);
@@ -206,10 +207,11 @@ export function useSessionKey() {
     step,
     error,
     execTxHash,
-    account,        // smart account (owner) or EOA (delegate)
-    sessionAccount, // delegate's session account (owner's smart wallet)
+    account,
+    sessionAccount,
     configured,
     handleOwnerConnect,
+    handleGrantSessionKey,
     handleDelegateConnect,
     executeTransfer,
     handleDisconnect,

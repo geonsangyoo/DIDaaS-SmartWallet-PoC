@@ -24,6 +24,7 @@ export default function SessionKeyPage() {
     sessionAccount,
     configured,
     handleOwnerConnect,
+    handleGrantSessionKey,
     handleDelegateConnect,
     executeTransfer,
     handleDisconnect,
@@ -32,7 +33,6 @@ export default function SessionKeyPage() {
     AMOUNT_DISPLAY,
   } = useSessionKey();
 
-  // Pre-fill owner address from localStorage when switching to delegate tab
   useEffect(() => {
     if (role === "delegate") {
       const stored = localStorage.getItem(OWNER_ADDR_STORAGE_KEY) ?? "";
@@ -40,7 +40,6 @@ export default function SessionKeyPage() {
     }
   }, [role]);
 
-  // Persist smart account address to localStorage after owner connects
   useEffect(() => {
     if (role === "owner" && account?.address) {
       localStorage.setItem(OWNER_ADDR_STORAGE_KEY, account.address);
@@ -54,6 +53,7 @@ export default function SessionKeyPage() {
 
   const isBusy =
     step === "connecting" ||
+    step === "granting" ||
     step === "link-connecting" ||
     step === "executing";
 
@@ -104,11 +104,8 @@ export default function SessionKeyPage() {
               <span className="text-zinc-400">Network:</span> Sepolia
             </p>
             <p>
-              Owner connects via{" "}
-              <code className="text-zinc-300 bg-zinc-800 px-1 rounded">
-                smartWallet({"{ sessionKey: {...} }"})
-              </code>{" "}
-              — the SDK registers the session key automatically using the admin EOA.
+              Owner connects to existing Smart Account, then explicitly grants a session key
+              via <code className="text-zinc-300 bg-zinc-800 px-1 rounded">addSessionKey</code>.
             </p>
           </div>
         </div>
@@ -157,28 +154,97 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
         {/* ── Owner Panel ──────────────────────────────────────────────────────── */}
         {role === "owner" && (
           <div className="space-y-4">
-
             <div className="border border-zinc-800 rounded-xl p-5 bg-zinc-900/30 space-y-4">
               <div>
                 <p className="text-xs text-zinc-500 uppercase tracking-wider">
                   Connect as Owner / 社員
                 </p>
                 <p className="text-xs text-zinc-500 mt-1">
-                  Google OAuth → EOA → Smart Account.
-                  Connecting automatically registers the Delegate as a session key signer
-                  (gas sponsored, 24-hour validity).
+                  Step 1: Connect to your existing Smart Account.
+                  Step 2: Grant the Delegate a session key (on-chain tx).
                 </p>
               </div>
 
-              {account ? (
+              {/* ── Not yet connected ── */}
+              {!account && (
                 <div className="space-y-3">
-                  {/* Success indicator */}
-                  <div className="flex items-center gap-2 text-xs text-green-400">
-                    <span className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
-                    Connected — session key registered
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <GoogleLogin
+                      onSuccess={(res) => res.credential && handleOwnerConnect(res.credential)}
+                      onError={() => {}}
+                      theme="filled_black"
+                      shape="rectangular"
+                      size="medium"
+                    />
+                    {step === "connecting" && (
+                      <p className="text-xs text-zinc-400">Connecting to Smart Account…</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Connected, grant pending ── */}
+              {account && (step === "connected" || step === "granting") && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-xs text-blue-400">
+                    <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0" />
+                    Connected — ready to grant session key
                   </div>
 
-                  {/* Addresses */}
+                  <div className="rounded-lg bg-zinc-900 border border-zinc-700 p-3 space-y-1.5 text-xs">
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="text-zinc-500 shrink-0">Smart Account</span>
+                      <span className="font-mono text-zinc-200 break-all text-right">
+                        {account.address}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-start gap-2 border-t border-zinc-800 pt-1.5">
+                      <span className="text-zinc-500 shrink-0">Grant key to</span>
+                      <span className="font-mono text-orange-400 break-all text-right">
+                        {DELEGATE_ADDRESS || "not configured"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between border-t border-zinc-800 pt-1.5">
+                      <span className="text-zinc-500">ETH limit / tx</span>
+                      <span className="text-zinc-300">{AMOUNT_DISPLAY} ETH</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Validity</span>
+                      <span className="text-zinc-300">24 hours</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Targets</span>
+                      <span className="text-zinc-300">any</span>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleGrantSessionKey}
+                    disabled={!DELEGATE_ADDRESS || isBusy}
+                    className="w-full py-3 px-4 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-medium transition-colors disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-not-allowed text-sm"
+                  >
+                    {step === "granting"
+                      ? "Granting… (awaiting tx confirmation)"
+                      : "Grant Session Key to Delegate"}
+                  </button>
+
+                  <button
+                    onClick={handleDisconnect}
+                    className="text-xs border border-zinc-700 text-zinc-400 hover:text-zinc-200 px-3 py-1 rounded"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              )}
+
+              {/* ── Grant complete ── */}
+              {account && step === "ready" && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-xs text-green-400">
+                    <span className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
+                    Session key granted
+                  </div>
+
                   <div className="rounded-lg bg-zinc-900 border border-zinc-700 p-3 space-y-1.5 text-xs">
                     <div className="flex justify-between items-start gap-2">
                       <span className="text-zinc-500 shrink-0">Smart Account</span>
@@ -203,7 +269,7 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                   </div>
 
                   <p className="text-xs text-zinc-500">
-                    Share your Smart Account address with the Delegate (copied to clipboard / pre-filled in Delegate tab):
+                    Share your Smart Account address with the Delegate (auto-filled in Delegate tab):
                   </p>
                   <div className="flex items-center gap-2">
                     <code className="text-xs font-mono text-zinc-300 bg-zinc-800 px-2 py-1 rounded break-all flex-1">
@@ -224,48 +290,6 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                     Disconnect
                   </button>
                 </div>
-              ) : (
-                <div className="space-y-3">
-                  {/* Session key preview */}
-                  <div className="rounded-lg bg-zinc-900 border border-zinc-700 p-3 space-y-1.5 text-xs">
-                    <p className="text-zinc-500 uppercase tracking-wider text-[10px] mb-2">
-                      Will register on connect
-                    </p>
-                    <div className="flex justify-between items-start gap-2">
-                      <span className="text-zinc-500 shrink-0">Delegate EOA</span>
-                      <span className="font-mono text-orange-400 break-all text-right">
-                        {DELEGATE_ADDRESS ? shorten(DELEGATE_ADDRESS) : "not configured"}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">ETH limit / tx</span>
-                      <span className="text-zinc-300">{AMOUNT_DISPLAY} ETH</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">Validity</span>
-                      <span className="text-zinc-300">24 hours</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">Targets</span>
-                      <span className="text-zinc-300">any</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <GoogleLogin
-                      onSuccess={(res) => res.credential && handleOwnerConnect(res.credential)}
-                      onError={() => {}}
-                      theme="filled_black"
-                      shape="rectangular"
-                      size="medium"
-                    />
-                    {step === "connecting" && (
-                      <p className="text-xs text-zinc-400">
-                        Connecting & registering session key…
-                      </p>
-                    )}
-                  </div>
-                </div>
               )}
             </div>
           </div>
@@ -278,7 +302,7 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
             {/* Step 1: Owner's smart account address */}
             <div className="border border-zinc-800 rounded-xl p-5 bg-zinc-900/30 space-y-3">
               <p className="text-xs text-zinc-500 uppercase tracking-wider">
-                Step 1 — Owner's Smart Account Address
+                Step 1 — Owner&apos;s Smart Account Address
               </p>
               <p className="text-xs text-zinc-500">
                 Paste the Smart Account address from the Owner tab.
@@ -358,7 +382,6 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                   Step 3 — Execute ETH Transfer via Session Key
                 </p>
 
-                {/* Tx preview */}
                 <div className="rounded-lg bg-zinc-900 border border-zinc-700 p-3 space-y-1.5 text-xs">
                   <div className="flex justify-between items-start gap-2">
                     <span className="text-zinc-500">From (Owner&apos;s SA)</span>
@@ -382,7 +405,7 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
 
                 {execTxHash && (
                   <div className="p-3 rounded-lg bg-green-900/20 border border-green-800 text-green-400 text-xs space-y-1.5">
-                    <p className="font-medium">✓ Transfer executed via session key!</p>
+                    <p className="font-medium">Transfer executed via session key!</p>
                     <p>
                       TX:{" "}
                       <a
@@ -410,8 +433,8 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                   {step === "executing"
                     ? "Executing… (awaiting UserOp confirmation)"
                     : step === "done"
-                    ? "✓ Transfer Done"
-                    : `⚡ Send ${AMOUNT_DISPLAY} ETH from Owner's Smart Account`}
+                    ? "Transfer Done"
+                    : `Send ${AMOUNT_DISPLAY} ETH from Owner's Smart Account`}
                 </button>
               </div>
             )}

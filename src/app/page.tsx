@@ -7,10 +7,75 @@ import { inAppWallet, preAuthenticate } from "thirdweb/wallets";
 import { sepolia } from "thirdweb/chains";
 import { useConnect, useActiveWallet, useDisconnect, useActiveAccount } from "thirdweb/react";
 import { client } from "./client";
+import { createWalletClient, createPublicClient, http, encodeFunctionData, parseEther, parseUnits } from "viem";
+import { privateKeyToAccount as viemPrivateKeyToAccount } from "viem/accounts";
+import { sepolia as viemSepolia } from "viem/chains";
 
 const IN_APP_WALLET_BASE_URL = "https://embedded-wallet.thirdweb.com";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
+
+// Explicit non-Thirdweb RPC for the direct-execute feature.
+// viem's built-in sepolia default resolves to 11155111.rpc.thirdweb.com, so we
+// always pass an explicit URL here. Override via NEXT_PUBLIC_SEPOLIA_RPC_URL.
+const DEFAULT_SEPOLIA_RPC =
+  process.env.NEXT_PUBLIC_SEPOLIA_RPC_URL || "https://rpc.ankr.com/eth_sepolia";
+
+// Well-known free public Sepolia RPCs (no API key required).
+// Ranked roughly by reliability/latency.
+const SEPOLIA_RPC_PRESETS = [
+  { label: "Ankr",       url: "https://rpc.ankr.com/eth_sepolia" },
+  { label: "PublicNode", url: "https://ethereum-sepolia-rpc.publicnode.com" },
+  { label: "Tenderly",   url: "https://sepolia.gateway.tenderly.co" },
+  { label: "1RPC",       url: "https://1rpc.io/sepolia" },
+] as const;
+
+// Minimal ABI for Thirdweb BaseAccount: admin can call execute/executeBatch directly,
+// bypassing ERC-4337 EntryPoint entirely. Gas is paid by the admin EOA.
+const SCW_EXECUTE_ABI = [
+  {
+    name: "execute",
+    type: "function",
+    stateMutability: "payable",
+    inputs: [
+      { name: "_target", type: "address" },
+      { name: "_value", type: "uint256" },
+      { name: "_data",  type: "bytes"    },
+    ],
+    outputs: [],
+  },
+  {
+    name: "executeBatch",
+    type: "function",
+    stateMutability: "payable",
+    inputs: [
+      { name: "_target", type: "address[]" },
+      { name: "_value",  type: "uint256[]" },
+      { name: "_data",   type: "bytes[]"   },
+    ],
+    outputs: [],
+  },
+] as const;
+
+const ERC20_ABI = [
+  {
+    name: "transfer",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "recipient", type: "address" },
+      { name: "amount",    type: "uint256" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    name: "decimals",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint8" }],
+  },
+] as const;
 
 export default function Home() {
   const [loading, setLoading] = useState(false);
@@ -23,6 +88,20 @@ export default function Home() {
 
   const [showExportKey, setShowExportKey] = useState(false);
   const [iframeLoading, setIframeLoading] = useState(true);
+
+  // ── Move assets: admin EOA private key → direct SCW execute (no ERC-4337) ─
+  const [pkInput, setPkInput] = useState("");
+  const [showPk, setShowPk] = useState(false);
+  const [moveScwAddr, setMoveScwAddr] = useState("");
+  const [moveAssetType, setMoveAssetType] = useState<"eth" | "erc20">("eth");
+  const [moveTokenAddr, setMoveTokenAddr] = useState("");
+  const [moveTokenDecimals, setMoveTokenDecimals] = useState(18);
+  const [moveDestAddr, setMoveDestAddr] = useState("");
+  const [moveAmount, setMoveAmount] = useState("0.001");
+  const [moveRpcUrl, setMoveRpcUrl] = useState(DEFAULT_SEPOLIA_RPC);
+  const [moveLoading, setMoveLoading] = useState(false);
+  const [moveTxHash, setMoveTxHash] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
 
   const { connect } = useConnect();
   const activeWallet = useActiveWallet();
@@ -131,6 +210,41 @@ export default function Home() {
     }
   };
 
+  // ── Strategy: jwt + EIP-7702 ──────────────────────────────────────────────
+  // Same JWT exchange as above, but the inAppWallet runs in EIP-7702 mode.
+  // The smart account address equals the EOA address (no separate contract).
+  const handleGoogleSuccessEIP7702 = async (googleIdToken: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${BACKEND_URL}/auth/google`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken: googleIdToken }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to obtain JWT from backend");
+      }
+      const { jwt } = (await res.json()) as { jwt: string };
+
+      await connect(async () => {
+        const wallet = inAppWallet({
+          executionMode: {
+            mode: "EIP7702",
+            sponsorGas: true,
+          },
+        });
+        await wallet.connect({ client, strategy: "jwt", jwt, chain: sepolia });
+        return wallet;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Connection failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // ── Strategy: auth_endpoint ────────────────────────────────────────────────
   // The Google ID token is passed directly as the payload.
   // ThirdWeb POSTs { payload } to our backend /auth/verify-payload endpoint,
@@ -152,6 +266,70 @@ export default function Home() {
       setError(err instanceof Error ? err.message : "Connection failed");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ── Move assets: admin EOA → SCW.execute() directly (no ERC-4337 bundler) ──
+  //
+  // Thirdweb's BaseAccount allows the admin EOA to call execute/executeBatch
+  // directly on the SCW contract, bypassing EntryPoint entirely.
+  // Gas is paid by the admin EOA in native token.
+  const handleMoveAsset = async () => {
+    const isErc20 = moveAssetType === "erc20";
+    if (!pkInput || !moveScwAddr || !moveDestAddr || !moveAmount) return;
+    if (isErc20 && !moveTokenAddr) return;
+
+    setMoveLoading(true);
+    setMoveError(null);
+    setMoveTxHash(null);
+    try {
+      const normalizedPk = (pkInput.startsWith("0x") ? pkInput : `0x${pkInput}`) as `0x${string}`;
+      const adminAccount = viemPrivateKeyToAccount(normalizedPk);
+
+      const transport = http(moveRpcUrl);
+      const publicClient = createPublicClient({ chain: viemSepolia, transport });
+      const walletClient = createWalletClient({ account: adminAccount, chain: viemSepolia, transport });
+
+      let target: `0x${string}`;
+      let value: bigint;
+      let data: `0x${string}`;
+
+      if (isErc20) {
+        // Fetch decimals on-chain so the user doesn't have to know them
+        const onChainDecimals = await publicClient.readContract({
+          address: moveTokenAddr as `0x${string}`,
+          abi: ERC20_ABI,
+          functionName: "decimals",
+        });
+        setMoveTokenDecimals(Number(onChainDecimals));
+        const tokenAmount = parseUnits(moveAmount, Number(onChainDecimals));
+        data = encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: "transfer",
+          args: [moveDestAddr as `0x${string}`, tokenAmount],
+        });
+        target = moveTokenAddr as `0x${string}`;
+        value = 0n;
+      } else {
+        target = moveDestAddr as `0x${string}`;
+        value = parseEther(moveAmount);
+        data = "0x";
+      }
+
+      // Direct call to SCW.execute() — admin EOA signs a normal EOA tx
+      const txHash = await walletClient.writeContract({
+        address: moveScwAddr as `0x${string}`,
+        abi: SCW_EXECUTE_ABI,
+        functionName: "execute",
+        args: [target, value, data],
+      });
+
+      await publicClient.waitForTransactionReceipt({ hash: txHash });
+      setMoveTxHash(txHash);
+    } catch (err) {
+      setMoveError(err instanceof Error ? err.message : "Transfer failed");
+    } finally {
+      setMoveLoading(false);
     }
   };
 
@@ -347,6 +525,187 @@ export default function Home() {
                 shape="rectangular"
                 size="large"
               />
+            </div>
+
+            {/* Strategy: jwt + EIP-7702 — EOA address IS the smart account address */}
+            <div className="border border-purple-900/50 rounded-xl p-6 bg-zinc-900/50 flex flex-col items-center gap-3">
+              <p className="text-xs text-purple-400 uppercase tracking-wider">Strategy: jwt + EIP-7702</p>
+              <p className="text-xs text-zinc-500 text-center">
+                EOA is upgraded in-place — smart account address equals the EOA address.
+              </p>
+              <GoogleLogin
+                onSuccess={(res) => res.credential && handleGoogleSuccessEIP7702(res.credential)}
+                onError={() => setError("Google sign-in failed")}
+                theme="filled_black"
+                shape="rectangular"
+                size="large"
+              />
+            </div>
+
+            {/* Direct SCW execute — admin EOA bypasses ERC-4337 bundler */}
+            <div className="border border-teal-900/50 rounded-xl p-6 bg-zinc-900/50 flex flex-col gap-4">
+              <p className="text-xs text-teal-400 uppercase tracking-wider text-center">
+                Move Assets — Direct SCW Execute (No Bundler)
+              </p>
+              <p className="text-xs text-zinc-500 text-center">
+                Admin EOA calls <code className="text-zinc-300 bg-zinc-800 px-1 rounded">execute()</code> directly
+                on the SCW contract. No EntryPoint, no UserOp — gas paid by the admin EOA.
+              </p>
+
+              {/* RPC URL — explicit non-Thirdweb endpoint */}
+              <div className="space-y-2">
+                <label className="text-xs text-zinc-500 block">RPC URL (Sepolia)</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {SEPOLIA_RPC_PRESETS.map((p) => (
+                    <button
+                      key={p.url}
+                      type="button"
+                      onClick={() => setMoveRpcUrl(p.url)}
+                      className={`px-2 py-1 rounded text-xs transition-colors ${
+                        moveRpcUrl === p.url
+                          ? "bg-teal-700 text-white"
+                          : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="text"
+                  value={moveRpcUrl}
+                  onChange={(e) => setMoveRpcUrl(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs font-mono placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+                />
+                <p className="text-xs text-zinc-600">
+                  Override default via <code className="text-zinc-500">NEXT_PUBLIC_SEPOLIA_RPC_URL</code>
+                </p>
+              </div>
+
+              {/* Private key */}
+              <div className="relative">
+                <input
+                  type={showPk ? "text" : "password"}
+                  placeholder="0xbfc… (exported in-app wallet private key)"
+                  value={pkInput}
+                  onChange={(e) => setPkInput(e.target.value)}
+                  className="w-full px-3 py-2 pr-14 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPk((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-zinc-500 hover:text-zinc-300 px-1"
+                >
+                  {showPk ? "Hide" : "Show"}
+                </button>
+              </div>
+
+              {/* SCW address */}
+              <input
+                type="text"
+                placeholder="SCW address (Smart Contract Wallet, 0x…)"
+                value={moveScwAddr}
+                onChange={(e) => setMoveScwAddr(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+              />
+
+              {/* Asset type toggle */}
+              <div className="flex gap-2">
+                {(["eth", "erc20"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setMoveAssetType(t)}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      moveAssetType === t
+                        ? "bg-teal-700 text-white"
+                        : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                    }`}
+                  >
+                    {t === "eth" ? "ETH" : "ERC-20 Token"}
+                  </button>
+                ))}
+              </div>
+
+              {/* ERC-20 token address */}
+              {moveAssetType === "erc20" && (
+                <input
+                  type="text"
+                  placeholder="Token contract address (0x…)"
+                  value={moveTokenAddr}
+                  onChange={(e) => setMoveTokenAddr(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+                />
+              )}
+
+              {/* Destination */}
+              <input
+                type="text"
+                placeholder="Destination address (0x…)"
+                value={moveDestAddr}
+                onChange={(e) => setMoveDestAddr(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+              />
+
+              {/* Amount */}
+              <input
+                type="number"
+                placeholder={moveAssetType === "eth" ? "Amount (ETH)" : "Amount (token units)"}
+                value={moveAmount}
+                onChange={(e) => setMoveAmount(e.target.value)}
+                min="0"
+                step="0.001"
+                className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+              />
+
+              {moveError && (
+                <p className="text-red-400 text-xs bg-red-900/20 border border-red-800 rounded px-3 py-2 break-words">
+                  {moveError}
+                </p>
+              )}
+
+              {moveTxHash && (
+                <div className="rounded-lg bg-zinc-900 border border-zinc-700 p-3 space-y-1.5 text-xs">
+                  <div className="flex justify-between items-start gap-2">
+                    <span className="text-zinc-500 shrink-0">From (SCW)</span>
+                    <span className="font-mono text-zinc-300 break-all text-right">{moveScwAddr}</span>
+                  </div>
+                  {moveAssetType === "erc20" && (
+                    <div className="flex justify-between border-t border-zinc-800 pt-1.5">
+                      <span className="text-zinc-500">Decimals (auto)</span>
+                      <span className="text-zinc-300">{moveTokenDecimals}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-start gap-2 border-t border-zinc-800 pt-1.5">
+                    <span className="text-zinc-500 shrink-0">TX</span>
+                    <a
+                      href={`https://sepolia.etherscan.io/tx/${moveTxHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-mono text-teal-400 underline break-all text-right"
+                    >
+                      {moveTxHash.slice(0, 10)}…{moveTxHash.slice(-8)}
+                    </a>
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={handleMoveAsset}
+                disabled={
+                  moveLoading || !pkInput || !moveScwAddr || !moveDestAddr || !moveAmount ||
+                  (moveAssetType === "erc20" && !moveTokenAddr)
+                }
+                className="w-full py-2 rounded-lg bg-teal-800 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-teal-100 text-sm transition-colors"
+              >
+                {moveLoading
+                  ? "Waiting for confirmation…"
+                  : `Move ${moveAssetType === "eth" ? "ETH" : "Token"} via SCW.execute()`}
+              </button>
+
+              <p className="text-xs text-zinc-600 text-center">
+                Private key stays in the browser. Admin EOA needs Sepolia ETH for gas.
+              </p>
             </div>
           </div>
         )}
