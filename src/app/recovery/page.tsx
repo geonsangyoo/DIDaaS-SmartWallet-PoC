@@ -38,6 +38,7 @@ export default function RecoveryPage() {
     handleDisconnect,
     handleAddGuardian,
     handleRecover,
+    handleRemoveAdmin,
     handleSendFromEmployeeWallet,
     sendLoading,
     sendError,
@@ -600,11 +601,28 @@ export default function RecoveryPage() {
                     {smartAccount.admins.map((a) => {
                       const isGuardian = SCENARIO_GUARDIAN_EOA && a.toLowerCase() === SCENARIO_GUARDIAN_EOA.toLowerCase();
                       const isEmployee = SCENARIO_LOST_KEY && a.toLowerCase() === SCENARIO_LOST_KEY.toLowerCase();
+                      const isSelf     = a.toLowerCase() === account.address.toLowerCase();
                       return (
-                        <div key={a} className="flex items-center justify-between text-xs">
-                          <span className={`font-mono ${isGuardian ? "text-emerald-400" : "text-zinc-300"}`}>{a}</span>
-                          {isGuardian && <span className="text-emerald-400 ml-2 shrink-0">← Guardian (上長) ✓</span>}
-                          {isEmployee && <span className="text-blue-400 ml-2 shrink-0">← 社員 (初期 Admin)</span>}
+                        <div key={a} className="flex items-center justify-between text-xs gap-2">
+                          <span className={`font-mono break-all ${isGuardian ? "text-emerald-400" : "text-zinc-300"}`}>{a}</span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {isGuardian && <span className="text-emerald-400">← Guardian (上長) ✓</span>}
+                            {isEmployee && <span className="text-blue-400">← 社員 (初期 Admin)</span>}
+                            {!isSelf && smartAccount.admins.length > 1 && (
+                              <button
+                                onClick={() => {
+                                  if (window.confirm(`Admin を削除しますか？\n${a}`)) {
+                                    handleRemoveAdmin(account.address, a);
+                                  }
+                                }}
+                                disabled={actionLoading}
+                                className="text-red-400 hover:text-red-300 disabled:opacity-40 border border-red-900/50 hover:border-red-700 px-2 py-0.5 rounded transition-colors"
+                                title="この Admin を削除 (removeAdmin)"
+                              >
+                                削除
+                              </button>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -717,15 +735,30 @@ export default function RecoveryPage() {
                       const isMe      = account && a.toLowerCase() === account.address.toLowerCase();
                       const isGuardian = SCENARIO_GUARDIAN_EOA && a.toLowerCase() === SCENARIO_GUARDIAN_EOA.toLowerCase();
                       const isEmployee = SCENARIO_LOST_KEY && a.toLowerCase() === SCENARIO_LOST_KEY.toLowerCase();
+                      const canRemove  = !!account && !isMe && isAdminOf(targetAccount) && smartAccount.admins.length > 1;
                       return (
                         <div key={a} className="flex items-center justify-between text-xs gap-2">
                           <span className={`font-mono break-all ${isGuardian ? "text-emerald-400" : isEmployee ? "text-red-400" : "text-zinc-300"}`}>
                             {a}
                           </span>
-                          <div className="flex items-center gap-1 shrink-0">
+                          <div className="flex items-center gap-2 shrink-0">
                             {isGuardian && <span className="text-emerald-400">Guardian ✓</span>}
                             {isEmployee && <span className="text-red-400">社員 (紛失)</span>}
                             {isMe && !isGuardian && !isEmployee && <span className="text-zinc-400">接続中</span>}
+                            {canRemove && (
+                              <button
+                                onClick={() => {
+                                  if (window.confirm(`Admin を削除しますか？\n${a}`)) {
+                                    handleRemoveAdmin(targetAccount, a);
+                                  }
+                                }}
+                                disabled={actionLoading}
+                                className="text-red-400 hover:text-red-300 disabled:opacity-40 border border-red-900/50 hover:border-red-700 px-2 py-0.5 rounded transition-colors"
+                                title="この Admin を削除 (removeAdmin)"
+                              >
+                                削除
+                              </button>
+                            )}
                           </div>
                         </div>
                       );

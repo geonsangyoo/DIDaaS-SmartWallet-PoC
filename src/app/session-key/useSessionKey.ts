@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { inAppWallet, smartWallet } from "thirdweb/wallets";
+import { predictSmartAccountAddress } from "thirdweb/wallets/smart";
 import type { Account } from "thirdweb/wallets";
 import {
   useConnect,
@@ -15,6 +16,7 @@ import {
   prepareTransaction,
   sendTransaction,
   sendAndConfirmTransaction,
+  deploySmartAccount,
 } from "thirdweb";
 import { addSessionKey } from "thirdweb/extensions/erc4337";
 import { client } from "../client";
@@ -44,6 +46,7 @@ export function useSessionKey() {
   const [error, setError] = useState<string | null>(null);
   const [execTxHash, setExecTxHash] = useState<string | null>(null);
   const [sessionAccount, setSessionAccount] = useState<Account | null>(null);
+  const [ownerSmartAccountAddress, setOwnerSmartAccountAddress] = useState<string | null>(null);
 
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
@@ -63,7 +66,11 @@ export function useSessionKey() {
     return jwt;
   };
 
-  // ── Owner: connect to existing smart wallet (default factory) ─────────────
+  // ── Owner: connect with in-app wallet only (EOA, no smart wallet wrapper) ─
+  //
+  // The active account is the EOA itself.  The smart account address is
+  // predicted from the EOA (default factory) so it can be shared with the
+  // delegate and used as the contract target when granting the session key.
   const handleOwnerConnect = async (idToken: string) => {
     setError(null);
     setStep("connecting");
@@ -72,21 +79,27 @@ export function useSessionKey() {
 
       const connectedWallet = await connect(async () => {
         const eoaWallet = inAppWallet();
-        const personalAccount = await eoaWallet.connect({
+        await eoaWallet.connect({
           client,
           strategy: "jwt",
           jwt,
           chain: sepolia,
         });
-
-        const sw = smartWallet({ chain: sepolia, sponsorGas: true });
-        await sw.connect({ client, personalAccount });
-        return sw;
+        return eoaWallet;
       });
 
-      const smartAcc = connectedWallet?.getAccount();
-      if (smartAcc && typeof window !== "undefined") {
-        localStorage.setItem(OWNER_ADDR_STORAGE_KEY, smartAcc.address);
+      const eoa = connectedWallet?.getAccount();
+      if (!eoa) throw new Error("Failed to get EOA");
+
+      const predictedSmartAddr = await predictSmartAccountAddress({
+        client,
+        chain: sepolia,
+        adminAddress: eoa.address,
+      });
+      setOwnerSmartAccountAddress(predictedSmartAddr);
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem(OWNER_ADDR_STORAGE_KEY, predictedSmartAddr);
       }
 
       setStep("connected");
@@ -98,22 +111,37 @@ export function useSessionKey() {
 
   // ── Owner: grant session key to delegate via addSessionKey extension ───────
   //
-  // account = useActiveAccount() → smart account whose signTypedData delegates
-  // to the underlying EOA.  The contract recovers the EOA and checks isAdmin(EOA).
+  // account = useActiveAccount() → EOA (in-app wallet).  We lazily wrap it in
+  // a smart wallet only for this transaction so the smart account is deployed
+  // and the addSessionKey UserOp is sponsored.  The owner's visible identity
+  // (account.address) remains the EOA.
   const handleGrantSessionKey = async () => {
     if (!account) return;
     setError(null);
     setStep("granting");
     try {
+      const sw = smartWallet({ chain: sepolia, sponsorGas: true });
+      const smartAccount = await sw.connect({ client, personalAccount: account });
+
       const smartAccountContract = getContract({
         client,
         chain: sepolia,
-        address: account.address,
+        address: smartAccount.address,
+      });
+
+      // Ensure the smart account exists on-chain before granting.  This avoids
+      // bundlers that fail to lazily deploy + call setPermissionsForSigner in a
+      // single UserOp, which surfaces as a confusing "not admin" revert.
+      await deploySmartAccount({
+        smartAccount,
+        chain: sepolia,
+        client,
+        accountContract: smartAccountContract,
       });
 
       const tx = addSessionKey({
         contract: smartAccountContract,
-        account,
+        account: smartAccount,
         sessionKeyAddress: DELEGATE_ADDRESS as `0x${string}`,
         permissions: {
           approvedTargets: "*",
@@ -123,7 +151,13 @@ export function useSessionKey() {
         },
       });
 
-      await sendAndConfirmTransaction({ account, transaction: tx });
+      await sendAndConfirmTransaction({ account: smartAccount, transaction: tx });
+
+      setOwnerSmartAccountAddress(smartAccount.address);
+      if (typeof window !== "undefined") {
+        localStorage.setItem(OWNER_ADDR_STORAGE_KEY, smartAccount.address);
+      }
+
       setStep("ready");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Grant failed");
@@ -198,6 +232,7 @@ export function useSessionKey() {
   const handleDisconnect = () => {
     if (activeWallet) disconnect(activeWallet);
     setSessionAccount(null);
+    setOwnerSmartAccountAddress(null);
     setStep("idle");
     setExecTxHash(null);
     setError(null);
@@ -209,6 +244,7 @@ export function useSessionKey() {
     execTxHash,
     account,
     sessionAccount,
+    ownerSmartAccountAddress,
     configured,
     handleOwnerConnect,
     handleGrantSessionKey,

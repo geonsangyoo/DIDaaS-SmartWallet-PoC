@@ -22,6 +22,7 @@ export default function SessionKeyPage() {
     execTxHash,
     account,
     sessionAccount,
+    ownerSmartAccountAddress,
     configured,
     handleOwnerConnect,
     handleGrantSessionKey,
@@ -39,12 +40,6 @@ export default function SessionKeyPage() {
       if (stored) setOwnerAddrInput(stored);
     }
   }, [role]);
-
-  useEffect(() => {
-    if (role === "owner" && account?.address) {
-      localStorage.setItem(OWNER_ADDR_STORAGE_KEY, account.address);
-    }
-  }, [role, account?.address]);
 
   const switchRole = (next: Role) => {
     handleDisconnect();
@@ -160,7 +155,7 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                   Connect as Owner / 社員
                 </p>
                 <p className="text-xs text-zinc-500 mt-1">
-                  Step 1: Connect to your existing Smart Account.
+                  Step 1: Sign in with Google (in-app wallet EOA).
                   Step 2: Grant the Delegate a session key (on-chain tx).
                 </p>
               </div>
@@ -177,7 +172,7 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                       size="medium"
                     />
                     {step === "connecting" && (
-                      <p className="text-xs text-zinc-400">Connecting to Smart Account…</p>
+                      <p className="text-xs text-zinc-400">Connecting wallet…</p>
                     )}
                   </div>
                 </div>
@@ -193,9 +188,15 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
 
                   <div className="rounded-lg bg-zinc-900 border border-zinc-700 p-3 space-y-1.5 text-xs">
                     <div className="flex justify-between items-start gap-2">
-                      <span className="text-zinc-500 shrink-0">Smart Account</span>
+                      <span className="text-zinc-500 shrink-0">Owner EOA</span>
                       <span className="font-mono text-zinc-200 break-all text-right">
                         {account.address}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-start gap-2 border-t border-zinc-800 pt-1.5">
+                      <span className="text-zinc-500 shrink-0">Smart Account (predicted)</span>
+                      <span className="font-mono text-zinc-200 break-all text-right">
+                        {ownerSmartAccountAddress ?? "—"}
                       </span>
                     </div>
                     <div className="flex justify-between items-start gap-2 border-t border-zinc-800 pt-1.5">
@@ -247,9 +248,15 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
 
                   <div className="rounded-lg bg-zinc-900 border border-zinc-700 p-3 space-y-1.5 text-xs">
                     <div className="flex justify-between items-start gap-2">
-                      <span className="text-zinc-500 shrink-0">Smart Account</span>
+                      <span className="text-zinc-500 shrink-0">Owner EOA</span>
                       <span className="font-mono text-zinc-200 break-all text-right">
                         {account.address}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-start gap-2 border-t border-zinc-800 pt-1.5">
+                      <span className="text-zinc-500 shrink-0">Smart Account</span>
+                      <span className="font-mono text-zinc-200 break-all text-right">
+                        {ownerSmartAccountAddress ?? "—"}
                       </span>
                     </div>
                     <div className="flex justify-between items-start gap-2 border-t border-zinc-800 pt-1.5">
@@ -273,11 +280,15 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                   </p>
                   <div className="flex items-center gap-2">
                     <code className="text-xs font-mono text-zinc-300 bg-zinc-800 px-2 py-1 rounded break-all flex-1">
-                      {account.address}
+                      {ownerSmartAccountAddress ?? "—"}
                     </code>
                     <button
-                      onClick={() => navigator.clipboard.writeText(account.address)}
-                      className="shrink-0 text-xs border border-zinc-700 text-zinc-400 hover:text-zinc-200 px-2 py-1 rounded"
+                      onClick={() =>
+                        ownerSmartAccountAddress &&
+                        navigator.clipboard.writeText(ownerSmartAccountAddress)
+                      }
+                      disabled={!ownerSmartAccountAddress}
+                      className="shrink-0 text-xs border border-zinc-700 text-zinc-400 hover:text-zinc-200 disabled:opacity-50 px-2 py-1 rounded"
                     >
                       Copy
                     </button>

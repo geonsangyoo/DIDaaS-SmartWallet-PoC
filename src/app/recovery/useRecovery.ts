@@ -286,6 +286,44 @@ export function useRecovery() {
     }
   };
 
+  // ── Remove a single admin from a smart account ───────────────────────────
+  //
+  // Who calls this: any current admin of the smart account
+  //   - Owner (employee) cleaning up their own admin list
+  //   - Guardian (上長) revoking an obsolete key
+  //
+  // Same EIP-712 signing path as removeAdmin in handleRecover, but exposed
+  // as a standalone action triggered from the admin-list UI.
+  const handleRemoveAdmin = async (
+    smartAccountAddress: string,
+    adminToRemove: string,
+  ) => {
+    if (!account) return;
+    setActionLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const contract = getContract({
+        client,
+        chain: sepolia,
+        address: smartAccountAddress as `0x${string}`,
+      });
+      const tx = removeAdmin({ contract, account, adminAddress: adminToRemove });
+      const receipt = await sendTransaction({ transaction: tx, account });
+      setSuccess(
+        `✓ Admin を削除しました！\n` +
+        `  TX: ${receipt.transactionHash}\n` +
+        `  Smart Account : ${smartAccountAddress}\n` +
+        `  削除した Admin: ${adminToRemove}`,
+      );
+      await fetchAdmins(smartAccountAddress);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Admin の削除に失敗しました");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   // ── ③ Send ETH from an arbitrary smart account (admin is the executor) ────
   //
   // How it works:
@@ -442,6 +480,7 @@ export function useRecovery() {
     handleDisconnect,
     handleAddGuardian,
     handleRecover,
+    handleRemoveAdmin,
     handleSendFromEmployeeWallet,
     sendLoading,
     sendError,
