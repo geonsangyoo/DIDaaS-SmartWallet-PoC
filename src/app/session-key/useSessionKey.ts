@@ -18,7 +18,7 @@ import {
   sendAndConfirmTransaction,
   deploySmartAccount,
 } from "thirdweb";
-import { addSessionKey } from "thirdweb/extensions/erc4337";
+import { addSessionKey, getAllActiveSigners } from "thirdweb/extensions/erc4337";
 import { client } from "../client";
 import {
   BACKEND_URL,
@@ -41,12 +41,22 @@ export type SessionKeyStep =
   | "done"
   | "error";
 
+export type ActiveSigner = {
+  signer: string;
+  approvedTargets: readonly string[];
+  nativeTokenLimitPerTransaction: bigint;
+  startTimestamp: bigint;
+  endTimestamp: bigint;
+};
+
 export function useSessionKey() {
   const [step, setStep] = useState<SessionKeyStep>("idle");
   const [error, setError] = useState<string | null>(null);
   const [execTxHash, setExecTxHash] = useState<string | null>(null);
   const [sessionAccount, setSessionAccount] = useState<Account | null>(null);
   const [ownerSmartAccountAddress, setOwnerSmartAccountAddress] = useState<string | null>(null);
+  const [activeSigners, setActiveSigners] = useState<ActiveSigner[]>([]);
+  const [signersLoading, setSignersLoading] = useState(false);
 
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
@@ -115,8 +125,12 @@ export function useSessionKey() {
   // a smart wallet only for this transaction so the smart account is deployed
   // and the addSessionKey UserOp is sponsored.  The owner's visible identity
   // (account.address) remains the EOA.
-  const handleGrantSessionKey = async () => {
+  const handleGrantSessionKey = async (recipient: string) => {
     if (!account) return;
+    if (!recipient) {
+      setError("Recipient address is required");
+      return;
+    }
     setError(null);
     setStep("granting");
     try {
@@ -144,7 +158,7 @@ export function useSessionKey() {
         account: smartAccount,
         sessionKeyAddress: DELEGATE_ADDRESS as `0x${string}`,
         permissions: {
-          approvedTargets: "*",
+          approvedTargets: [recipient as `0x${string}`],
           nativeTokenLimitPerTransaction: parseFloat(AMOUNT_DISPLAY),
           permissionStartTimestamp: new Date(),
           permissionEndTimestamp: new Date(Date.now() + SESSION_DURATION_MS),
@@ -158,10 +172,32 @@ export function useSessionKey() {
         localStorage.setItem(OWNER_ADDR_STORAGE_KEY, smartAccount.address);
       }
 
+      await loadActiveSigners(smartAccount.address);
+
       setStep("ready");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Grant failed");
       setStep("error");
+    }
+  };
+
+  // Read on-chain list of active session keys for the given Smart Account.
+  const loadActiveSigners = async (smartAccountAddr?: string) => {
+    const target = smartAccountAddr ?? ownerSmartAccountAddress;
+    if (!target) {
+      setError("Smart Account address not available");
+      return;
+    }
+    setError(null);
+    setSignersLoading(true);
+    try {
+      const contract = getContract({ client, chain: sepolia, address: target });
+      const signers = await getAllActiveSigners({ contract });
+      setActiveSigners(signers as unknown as ActiveSigner[]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load signers");
+    } finally {
+      setSignersLoading(false);
     }
   };
 
@@ -204,13 +240,17 @@ export function useSessionKey() {
   };
 
   // ── Delegate: execute ETH transfer from owner's smart account ─────────────
-  const executeTransfer = async () => {
-    if (!sessionAccount || !RECIPIENT_ADDRESS) return;
+  const executeTransfer = async (recipient: string) => {
+    if (!sessionAccount) return;
+    if (!recipient) {
+      setError("Recipient address is required");
+      return;
+    }
     setError(null);
     setStep("executing");
     try {
       const tx = prepareTransaction({
-        to: RECIPIENT_ADDRESS as `0x${string}`,
+        to: recipient as `0x${string}`,
         value: AMOUNT_WEI,
         chain: sepolia,
         client,
@@ -233,6 +273,7 @@ export function useSessionKey() {
     if (activeWallet) disconnect(activeWallet);
     setSessionAccount(null);
     setOwnerSmartAccountAddress(null);
+    setActiveSigners([]);
     setStep("idle");
     setExecTxHash(null);
     setError(null);
@@ -245,11 +286,14 @@ export function useSessionKey() {
     account,
     sessionAccount,
     ownerSmartAccountAddress,
+    activeSigners,
+    signersLoading,
     configured,
     handleOwnerConnect,
     handleGrantSessionKey,
     handleDelegateConnect,
     executeTransfer,
+    loadActiveSigners,
     handleDisconnect,
     DELEGATE_ADDRESS,
     RECIPIENT_ADDRESS,

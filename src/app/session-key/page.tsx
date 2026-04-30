@@ -23,16 +23,21 @@ export default function SessionKeyPage() {
     account,
     sessionAccount,
     ownerSmartAccountAddress,
+    activeSigners,
+    signersLoading,
     configured,
     handleOwnerConnect,
     handleGrantSessionKey,
     handleDelegateConnect,
     executeTransfer,
+    loadActiveSigners,
     handleDisconnect,
     DELEGATE_ADDRESS,
     RECIPIENT_ADDRESS,
     AMOUNT_DISPLAY,
   } = useSessionKey();
+
+  const [recipientInput, setRecipientInput] = useState(RECIPIENT_ADDRESS);
 
   useEffect(() => {
     if (role === "delegate") {
@@ -213,15 +218,29 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                       <span className="text-zinc-500">Validity</span>
                       <span className="text-zinc-300">24 hours</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">Targets</span>
-                      <span className="text-zinc-300">any</span>
-                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-zinc-500 uppercase tracking-wider">
+                      Approved Target (Recipient)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="0x… (only this address can be sent ETH)"
+                      value={recipientInput}
+                      onChange={(e) => setRecipientInput(e.target.value)}
+                      disabled={isBusy}
+                      className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 disabled:opacity-50"
+                    />
+                    <p className="text-xs text-zinc-500">
+                      Default loaded from <code className="text-zinc-400">NEXT_PUBLIC_SESSION_KEY_TEST_RECIPIENT</code>.
+                      Delegate transactions to other addresses will revert.
+                    </p>
                   </div>
 
                   <button
-                    onClick={handleGrantSessionKey}
-                    disabled={!DELEGATE_ADDRESS || isBusy}
+                    onClick={() => handleGrantSessionKey(recipientInput.trim())}
+                    disabled={!DELEGATE_ADDRESS || !recipientInput.trim() || isBusy}
                     className="w-full py-3 px-4 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-medium transition-colors disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-not-allowed text-sm"
                   >
                     {step === "granting"
@@ -265,6 +284,12 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                         {DELEGATE_ADDRESS || "—"}
                       </span>
                     </div>
+                    <div className="flex justify-between items-start gap-2 border-t border-zinc-800 pt-1.5">
+                      <span className="text-zinc-500 shrink-0">Approved target</span>
+                      <span className="font-mono text-zinc-300 break-all text-right">
+                        {recipientInput || "—"}
+                      </span>
+                    </div>
                     <div className="flex justify-between border-t border-zinc-800 pt-1.5">
                       <span className="text-zinc-500">ETH limit / tx</span>
                       <span className="text-zinc-300">{AMOUNT_DISPLAY} ETH</span>
@@ -303,6 +328,74 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                 </div>
               )}
             </div>
+
+            {/* ── Active session keys (on-chain) ──────────────────────────────── */}
+            {account && (step === "ready" || step === "connected") && (
+              <div className="border border-zinc-800 rounded-xl p-5 bg-zinc-900/30 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs text-zinc-500 uppercase tracking-wider">
+                      Active Session Keys (on-chain)
+                    </p>
+                    <p className="text-xs text-zinc-500 mt-1">
+                      Read directly from your Smart Account via{" "}
+                      <code className="text-zinc-400">getAllActiveSigners</code>.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => loadActiveSigners()}
+                    disabled={!ownerSmartAccountAddress || signersLoading}
+                    className="shrink-0 text-xs border border-zinc-700 text-zinc-400 hover:text-zinc-200 disabled:opacity-50 px-3 py-1.5 rounded"
+                  >
+                    {signersLoading ? "Loading…" : "Refresh"}
+                  </button>
+                </div>
+
+                {activeSigners.length === 0 ? (
+                  <p className="text-xs text-zinc-500 italic">
+                    {signersLoading
+                      ? "Reading from chain…"
+                      : "No active session keys. Click Refresh, or grant one above."}
+                  </p>
+                ) : (
+                  <ul className="space-y-2">
+                    {activeSigners.map((s) => (
+                      <li
+                        key={s.signer}
+                        className="rounded-lg bg-zinc-900 border border-zinc-700 p-3 space-y-1 text-xs"
+                      >
+                        <div className="flex justify-between items-start gap-2">
+                          <span className="text-zinc-500 shrink-0">Signer (delegate)</span>
+                          <span className="font-mono text-orange-400 break-all text-right">
+                            {s.signer}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-start gap-2 border-t border-zinc-800 pt-1">
+                          <span className="text-zinc-500 shrink-0">Approved targets</span>
+                          <span className="font-mono text-zinc-300 break-all text-right">
+                            {s.approvedTargets.length > 0
+                              ? s.approvedTargets.join(", ")
+                              : "(none)"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between border-t border-zinc-800 pt-1">
+                          <span className="text-zinc-500">Native limit / tx</span>
+                          <span className="text-zinc-300">
+                            {(Number(s.nativeTokenLimitPerTransaction) / 1e18).toString()} ETH
+                          </span>
+                        </div>
+                        <div className="flex justify-between border-t border-zinc-800 pt-1">
+                          <span className="text-zinc-500">Valid until</span>
+                          <span className="text-zinc-300">
+                            {new Date(Number(s.endTimestamp) * 1000).toLocaleString()}
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -393,15 +486,32 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                   Step 3 — Execute ETH Transfer via Session Key
                 </p>
 
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500 uppercase tracking-wider">
+                    Recipient address
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="0x… (must match the Owner's approved target)"
+                    value={recipientInput}
+                    onChange={(e) => setRecipientInput(e.target.value)}
+                    disabled={isBusy || step === "done"}
+                    className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 disabled:opacity-50"
+                  />
+                  <p className="text-xs text-zinc-500">
+                    Sending to any address other than the Owner&apos;s approved target will revert on-chain.
+                  </p>
+                </div>
+
                 <div className="rounded-lg bg-zinc-900 border border-zinc-700 p-3 space-y-1.5 text-xs">
                   <div className="flex justify-between items-start gap-2">
                     <span className="text-zinc-500">From (Owner&apos;s SA)</span>
                     <span className="font-mono text-zinc-300">{shorten(sessionAccount.address)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-zinc-500">To (Recipient / 上長)</span>
+                    <span className="text-zinc-500">To</span>
                     <span className="font-mono text-zinc-300">
-                      {RECIPIENT_ADDRESS ? shorten(RECIPIENT_ADDRESS) : "not configured"}
+                      {recipientInput ? shorten(recipientInput) : "—"}
                     </span>
                   </div>
                   <div className="flex justify-between border-t border-zinc-800 pt-1.5 mt-0.5">
@@ -437,8 +547,8 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                 )}
 
                 <button
-                  onClick={executeTransfer}
-                  disabled={!RECIPIENT_ADDRESS || isBusy || step === "done"}
+                  onClick={() => executeTransfer(recipientInput.trim())}
+                  disabled={!recipientInput.trim() || isBusy || step === "done"}
                   className="w-full py-3 px-4 rounded-xl bg-orange-700 hover:bg-orange-600 text-white font-medium transition-colors disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-not-allowed text-sm"
                 >
                   {step === "executing"
