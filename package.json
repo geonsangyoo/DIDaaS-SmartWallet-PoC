@@ -12,6 +12,9 @@
   "dependencies": {
     "@react-oauth/google": "^0.13.4",
     "@safe-global/sdk-starter-kit": "^3.0.2",
+    "@zerodev/ecdsa-validator": "^5.4.9",
+    "@zerodev/permissions": "^5.6.3",
+    "@zerodev/sdk": "^5.5.10",
     "next": "15.4.10",
     "react": "19.1.1",
     "react-dom": "19.1.1",

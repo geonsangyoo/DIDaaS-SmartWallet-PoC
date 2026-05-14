@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { GoogleLogin } from "@react-oauth/google";
 import { useSessionKey } from "./useSessionKey";
-import { OWNER_ADDR_STORAGE_KEY } from "./config";
+import { OWNER_ADDR_STORAGE_KEY, type TokenAsset, type Backend } from "./config";
+import ZerodevPanels from "./ZerodevPanels";
 
 function shorten(addr: string) {
   return addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "—";
@@ -13,6 +14,7 @@ function shorten(addr: string) {
 type Role = "owner" | "delegate";
 
 export default function SessionKeyPage() {
+  const [backend, setBackend] = useState<Backend>("thirdweb");
   const [role, setRole] = useState<Role>("owner");
   const [ownerAddrInput, setOwnerAddrInput] = useState("");
 
@@ -35,9 +37,17 @@ export default function SessionKeyPage() {
     DELEGATE_ADDRESS,
     RECIPIENT_ADDRESS,
     AMOUNT_DISPLAY,
+    TOKEN_ASSETS,
+    NATIVE_ASSET,
   } = useSessionKey();
 
   const [recipientInput, setRecipientInput] = useState(RECIPIENT_ADDRESS);
+  const [assetSymbol, setAssetSymbol] = useState<string>(NATIVE_ASSET.symbol);
+  const [amountInput, setAmountInput] = useState<string>(AMOUNT_DISPLAY);
+
+  const selectedAsset: TokenAsset =
+    TOKEN_ASSETS.find((a) => a.symbol === assetSymbol) ?? NATIVE_ASSET;
+  const isNative = selectedAsset.kind === "native";
 
   useEffect(() => {
     if (role === "delegate") {
@@ -110,8 +120,27 @@ export default function SessionKeyPage() {
           </div>
         </div>
 
-        {/* Setup notice */}
-        {!configured && (
+        {/* Backend selector */}
+        <div className="flex gap-2">
+          {(["thirdweb", "zerodev"] as const).map((b) => (
+            <button
+              key={b}
+              onClick={() => setBackend(b)}
+              className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${
+                backend === b
+                  ? "bg-zinc-700 text-zinc-100 border border-zinc-500"
+                  : "bg-zinc-900 text-zinc-500 border border-zinc-800 hover:bg-zinc-800"
+              }`}
+            >
+              {b === "thirdweb"
+                ? "Thirdweb AccountPermissions (single slot, ETH-only cap)"
+                : "ZeroDev / Kernel ERC-7579 (per-asset caps, multi-policy)"}
+            </button>
+          ))}
+        </div>
+
+        {/* Setup notice (Thirdweb env vars) */}
+        {backend === "thirdweb" && !configured && (
           <div className="border border-amber-700/50 rounded-xl p-4 bg-amber-900/10 text-sm space-y-3">
             <p className="text-amber-400 font-medium">Setup required — env vars missing</p>
             <pre className="text-xs text-zinc-400 bg-zinc-900 rounded p-3 overflow-x-auto">{`# Delegate's inAppWallet EOA (経費担当)
@@ -125,34 +154,39 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
           </div>
         )}
 
-        {/* Role selector */}
-        <div className="flex gap-2">
-          {(["owner", "delegate"] as const).map((r) => (
-            <button
-              key={r}
-              onClick={() => switchRole(r)}
-              className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-colors ${
-                role === r
-                  ? r === "owner"
-                    ? "bg-blue-700 text-white"
-                    : "bg-orange-700 text-white"
-                  : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-              }`}
-            >
-              {r === "owner" ? "① Owner / 社員" : "② Delegate / 経費担当"}
-            </button>
-          ))}
-        </div>
+        {/* ZeroDev backend renders its own panels */}
+        {backend === "zerodev" && <ZerodevPanels />}
 
-        {/* Error banner */}
-        {error && (
+        {/* Thirdweb backend role selector */}
+        {backend === "thirdweb" && (
+          <div className="flex gap-2">
+            {(["owner", "delegate"] as const).map((r) => (
+              <button
+                key={r}
+                onClick={() => switchRole(r)}
+                className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+                  role === r
+                    ? r === "owner"
+                      ? "bg-blue-700 text-white"
+                      : "bg-orange-700 text-white"
+                    : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                }`}
+              >
+                {r === "owner" ? "① Owner / 社員" : "② Delegate / 経費担当"}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Error banner (Thirdweb backend) */}
+        {backend === "thirdweb" && error && (
           <div className="p-3 rounded-lg bg-red-900/20 border border-red-800 text-red-400 text-sm whitespace-pre-wrap">
             {error}
           </div>
         )}
 
-        {/* ── Owner Panel ──────────────────────────────────────────────────────── */}
-        {role === "owner" && (
+        {/* ── Owner Panel (Thirdweb backend) ──────────────────────────────────── */}
+        {backend === "thirdweb" && role === "owner" && (
           <div className="space-y-4">
             <div className="border border-zinc-800 rounded-xl p-5 bg-zinc-900/30 space-y-4">
               <div>
@@ -222,24 +256,73 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
 
                   <div className="space-y-1.5">
                     <label className="text-xs text-zinc-500 uppercase tracking-wider">
-                      Approved Target (Recipient)
+                      Asset
+                    </label>
+                    <div className="flex gap-2 flex-wrap">
+                      {TOKEN_ASSETS.map((a) => (
+                        <button
+                          key={a.symbol}
+                          type="button"
+                          onClick={() => setAssetSymbol(a.symbol)}
+                          disabled={isBusy}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 ${
+                            assetSymbol === a.symbol
+                              ? "bg-blue-700 text-white"
+                              : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                          }`}
+                        >
+                          {a.symbol}
+                        </button>
+                      ))}
+                    </div>
+                    {!isNative && (
+                      <p className="text-xs text-amber-500/80">
+                        ERC-20: approvedTarget = token contract. The session key
+                        can call any function on this token (incl. transfer of
+                        any amount to any address). Per-recipient/amount limits
+                        require a custom guard contract.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-zinc-500 uppercase tracking-wider">
+                      {isNative ? "Approved Target (Recipient)" : "Recipient (informational)"}
                     </label>
                     <input
                       type="text"
-                      placeholder="0x… (only this address can be sent ETH)"
+                      placeholder={
+                        isNative
+                          ? "0x… (only this address can be sent ETH)"
+                          : "0x… (delegate will transfer the token here)"
+                      }
                       value={recipientInput}
                       onChange={(e) => setRecipientInput(e.target.value)}
                       disabled={isBusy}
                       className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 disabled:opacity-50"
                     />
                     <p className="text-xs text-zinc-500">
-                      Default loaded from <code className="text-zinc-400">NEXT_PUBLIC_SESSION_KEY_TEST_RECIPIENT</code>.
-                      Delegate transactions to other addresses will revert.
+                      {isNative ? (
+                        <>
+                          Default loaded from{" "}
+                          <code className="text-zinc-400">NEXT_PUBLIC_SESSION_KEY_TEST_RECIPIENT</code>.
+                          Delegate transactions to other addresses will revert.
+                        </>
+                      ) : (
+                        <>
+                          For ERC-20 the approved target is the token contract
+                          ({selectedAsset.address?.slice(0, 6)}…
+                          {selectedAsset.address?.slice(-4)}), not the recipient.
+                          This address is just the default destination shown to the delegate.
+                        </>
+                      )}
                     </p>
                   </div>
 
                   <button
-                    onClick={() => handleGrantSessionKey(recipientInput.trim())}
+                    onClick={() =>
+                      handleGrantSessionKey(recipientInput.trim(), selectedAsset)
+                    }
                     disabled={!DELEGATE_ADDRESS || !recipientInput.trim() || isBusy}
                     className="w-full py-3 px-4 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-medium transition-colors disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-not-allowed text-sm"
                   >
@@ -285,14 +368,29 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                       </span>
                     </div>
                     <div className="flex justify-between items-start gap-2 border-t border-zinc-800 pt-1.5">
+                      <span className="text-zinc-500 shrink-0">Asset</span>
+                      <span className="text-zinc-300 text-right">
+                        {selectedAsset.symbol}
+                        {!isNative && selectedAsset.address && (
+                          <span className="font-mono text-zinc-500 block break-all">
+                            {selectedAsset.address}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-start gap-2 border-t border-zinc-800 pt-1.5">
                       <span className="text-zinc-500 shrink-0">Approved target</span>
                       <span className="font-mono text-zinc-300 break-all text-right">
-                        {recipientInput || "—"}
+                        {isNative
+                          ? recipientInput || "—"
+                          : selectedAsset.address || "—"}
                       </span>
                     </div>
                     <div className="flex justify-between border-t border-zinc-800 pt-1.5">
                       <span className="text-zinc-500">ETH limit / tx</span>
-                      <span className="text-zinc-300">{AMOUNT_DISPLAY} ETH</span>
+                      <span className="text-zinc-300">
+                        {AMOUNT_DISPLAY} ETH {!isNative && "(native only — not enforced for ERC-20)"}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-zinc-500">Valid for</span>
@@ -399,8 +497,8 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
           </div>
         )}
 
-        {/* ── Delegate Panel ───────────────────────────────────────────────────── */}
-        {role === "delegate" && (
+        {/* ── Delegate Panel (Thirdweb backend) ───────────────────────────────── */}
+        {backend === "thirdweb" && role === "delegate" && (
           <div className="space-y-4">
 
             {/* Step 1: Owner's smart account address */}
@@ -483,8 +581,35 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
             {sessionAccount && (
               <div className="border border-zinc-800 rounded-xl p-5 bg-zinc-900/30 space-y-4">
                 <p className="text-xs text-zinc-500 uppercase tracking-wider">
-                  Step 3 — Execute ETH Transfer via Session Key
+                  Step 3 — Execute Transfer via Session Key
                 </p>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500 uppercase tracking-wider">
+                    Asset
+                  </label>
+                  <div className="flex gap-2 flex-wrap">
+                    {TOKEN_ASSETS.map((a) => (
+                      <button
+                        key={a.symbol}
+                        type="button"
+                        onClick={() => setAssetSymbol(a.symbol)}
+                        disabled={isBusy || step === "done"}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 ${
+                          assetSymbol === a.symbol
+                            ? "bg-orange-700 text-white"
+                            : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                        }`}
+                      >
+                        {a.symbol}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-zinc-500">
+                    Must match the asset the Owner granted the session key for,
+                    or the on-chain permission check will revert.
+                  </p>
+                </div>
 
                 <div className="space-y-1.5">
                   <label className="text-xs text-zinc-500 uppercase tracking-wider">
@@ -492,16 +617,38 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                   </label>
                   <input
                     type="text"
-                    placeholder="0x… (must match the Owner's approved target)"
+                    placeholder={
+                      isNative
+                        ? "0x… (must match the Owner's approved target)"
+                        : "0x… (any address — token contract is the approved target)"
+                    }
                     value={recipientInput}
                     onChange={(e) => setRecipientInput(e.target.value)}
                     disabled={isBusy || step === "done"}
                     className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 disabled:opacity-50"
                   />
                   <p className="text-xs text-zinc-500">
-                    Sending to any address other than the Owner&apos;s approved target will revert on-chain.
+                    {isNative
+                      ? "Sending to any address other than the Owner's approved target will revert on-chain."
+                      : "For ERC-20 any recipient is allowed — the AccountPermissions module only checks the call goes to the token contract."}
                   </p>
                 </div>
+
+                {!isNative && (
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-zinc-500 uppercase tracking-wider">
+                      Amount ({selectedAsset.symbol})
+                    </label>
+                    <input
+                      type="text"
+                      placeholder={`e.g. 1.5 (${selectedAsset.decimals} decimals)`}
+                      value={amountInput}
+                      onChange={(e) => setAmountInput(e.target.value)}
+                      disabled={isBusy || step === "done"}
+                      className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 disabled:opacity-50"
+                    />
+                  </div>
+                )}
 
                 <div className="rounded-lg bg-zinc-900 border border-zinc-700 p-3 space-y-1.5 text-xs">
                   <div className="flex justify-between items-start gap-2">
@@ -514,9 +661,19 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                       {recipientInput ? shorten(recipientInput) : "—"}
                     </span>
                   </div>
+                  {!isNative && (
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Token contract</span>
+                      <span className="font-mono text-zinc-300">
+                        {selectedAsset.address ? shorten(selectedAsset.address) : "—"}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex justify-between border-t border-zinc-800 pt-1.5 mt-0.5">
                     <span className="text-zinc-500">Amount</span>
-                    <span className="text-zinc-100 font-medium">{AMOUNT_DISPLAY} ETH</span>
+                    <span className="text-zinc-100 font-medium">
+                      {isNative ? AMOUNT_DISPLAY : amountInput || "0"} {selectedAsset.symbol}
+                    </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-zinc-500">Signed by</span>
@@ -547,15 +704,28 @@ NEXT_PUBLIC_SESSION_KEY_TEST_AMOUNT=0.001`}</pre>
                 )}
 
                 <button
-                  onClick={() => executeTransfer(recipientInput.trim())}
-                  disabled={!recipientInput.trim() || isBusy || step === "done"}
+                  onClick={() =>
+                    executeTransfer(
+                      recipientInput.trim(),
+                      selectedAsset,
+                      amountInput.trim() || AMOUNT_DISPLAY,
+                    )
+                  }
+                  disabled={
+                    !recipientInput.trim() ||
+                    (!isNative && !amountInput.trim()) ||
+                    isBusy ||
+                    step === "done"
+                  }
                   className="w-full py-3 px-4 rounded-xl bg-orange-700 hover:bg-orange-600 text-white font-medium transition-colors disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-not-allowed text-sm"
                 >
                   {step === "executing"
                     ? "Executing… (awaiting UserOp confirmation)"
                     : step === "done"
                     ? "Transfer Done"
-                    : `Send ${AMOUNT_DISPLAY} ETH from Owner's Smart Account`}
+                    : isNative
+                    ? `Send ${AMOUNT_DISPLAY} ETH from Owner's Smart Account`
+                    : `Send ${amountInput || "0"} ${selectedAsset.symbol} from Owner's Smart Account`}
                 </button>
               </div>
             )}

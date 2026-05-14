@@ -19,6 +19,7 @@ import {
   deploySmartAccount,
 } from "thirdweb";
 import { addSessionKey, getAllActiveSigners } from "thirdweb/extensions/erc4337";
+import { transfer as erc20Transfer } from "thirdweb/extensions/erc20";
 import { client } from "../client";
 import {
   BACKEND_URL,
@@ -28,6 +29,9 @@ import {
   AMOUNT_WEI,
   SESSION_DURATION_MS,
   OWNER_ADDR_STORAGE_KEY,
+  NATIVE_ASSET,
+  TOKEN_ASSETS,
+  type TokenAsset,
 } from "./config";
 
 export type SessionKeyStep =
@@ -125,10 +129,23 @@ export function useSessionKey() {
   // a smart wallet only for this transaction so the smart account is deployed
   // and the addSessionKey UserOp is sponsored.  The owner's visible identity
   // (account.address) remains the EOA.
-  const handleGrantSessionKey = async (recipient: string) => {
+  //
+  // approvedTargets depends on the chosen asset:
+  //   - native (ETH): the recipient address (call has empty calldata)
+  //   - erc20:        the token contract (the call goes to the token, not the
+  //                   recipient — so per-recipient/amount limits cannot be
+  //                   enforced by the AccountPermissions module)
+  const handleGrantSessionKey = async (
+    recipient: string,
+    asset: TokenAsset = NATIVE_ASSET,
+  ) => {
     if (!account) return;
     if (!recipient) {
       setError("Recipient address is required");
+      return;
+    }
+    if (asset.kind === "erc20" && !asset.address) {
+      setError(`Token contract address missing for ${asset.symbol}`);
       return;
     }
     setError(null);
@@ -153,12 +170,17 @@ export function useSessionKey() {
         accountContract: smartAccountContract,
       });
 
+      const approvedTarget =
+        asset.kind === "native"
+          ? (recipient as `0x${string}`)
+          : (asset.address as `0x${string}`);
+
       const tx = addSessionKey({
         contract: smartAccountContract,
         account: smartAccount,
         sessionKeyAddress: DELEGATE_ADDRESS as `0x${string}`,
         permissions: {
-          approvedTargets: [recipient as `0x${string}`],
+          approvedTargets: [approvedTarget],
           nativeTokenLimitPerTransaction: parseFloat(AMOUNT_DISPLAY),
           permissionStartTimestamp: new Date(),
           permissionEndTimestamp: new Date(Date.now() + SESSION_DURATION_MS),
@@ -239,27 +261,61 @@ export function useSessionKey() {
     }
   };
 
-  // ── Delegate: execute ETH transfer from owner's smart account ─────────────
-  const executeTransfer = async (recipient: string) => {
+  // ── Delegate: execute transfer from owner's smart account ─────────────────
+  //
+  // For native (ETH) the UserOp calls the recipient with empty data and a
+  // value. For ERC-20 the UserOp calls the token contract's transfer(to,
+  // amount); the AccountPermissions module only checks that the target
+  // matches an approvedTarget — it does not inspect calldata, so the amount
+  // here is bounded only by the SA's token balance.
+  const executeTransfer = async (
+    recipient: string,
+    asset: TokenAsset = NATIVE_ASSET,
+    amountDisplay: string = AMOUNT_DISPLAY,
+  ) => {
     if (!sessionAccount) return;
     if (!recipient) {
       setError("Recipient address is required");
       return;
     }
+    if (asset.kind === "erc20" && !asset.address) {
+      setError(`Token contract address missing for ${asset.symbol}`);
+      return;
+    }
     setError(null);
     setStep("executing");
     try {
-      const tx = prepareTransaction({
-        to: recipient as `0x${string}`,
-        value: AMOUNT_WEI,
-        chain: sepolia,
-        client,
-      });
+      let transactionHash: string;
 
-      const { transactionHash } = await sendTransaction({
-        account: sessionAccount,
-        transaction: tx,
-      });
+      if (asset.kind === "native") {
+        const tx = prepareTransaction({
+          to: recipient as `0x${string}`,
+          value: AMOUNT_WEI,
+          chain: sepolia,
+          client,
+        });
+        const res = await sendTransaction({
+          account: sessionAccount,
+          transaction: tx,
+        });
+        transactionHash = res.transactionHash;
+      } else {
+        const tokenContract = getContract({
+          client,
+          chain: sepolia,
+          address: asset.address as `0x${string}`,
+        });
+        const tx = erc20Transfer({
+          contract: tokenContract,
+          to: recipient,
+          amount: amountDisplay,
+        });
+        const res = await sendTransaction({
+          account: sessionAccount,
+          transaction: tx,
+        });
+        transactionHash = res.transactionHash;
+      }
 
       setExecTxHash(transactionHash);
       setStep("done");
@@ -298,5 +354,7 @@ export function useSessionKey() {
     DELEGATE_ADDRESS,
     RECIPIENT_ADDRESS,
     AMOUNT_DISPLAY,
+    TOKEN_ASSETS,
+    NATIVE_ASSET,
   };
 }
