@@ -702,9 +702,17 @@ export default function NftPage() {
 
         {/* Header */}
         <div>
-          <Link href="/" className="text-zinc-500 hover:text-zinc-300 text-sm">
-            ← Home
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link href="/" className="text-zinc-500 hover:text-zinc-300 text-sm">
+              ← Home
+            </Link>
+            <Link
+              href="/nft/viewer"
+              className="text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-700 hover:border-zinc-500 px-3 py-1 rounded transition-colors"
+            >
+              Contract Viewer →
+            </Link>
+          </div>
           <h1 className="text-2xl font-bold mt-1">NFT Token Deployment PoC</h1>
           <p className="text-zinc-400 text-sm">
             NFTトークンデプロイ検証 — ThirdWeb SDK + ERC-4337 SmartWallet (Sepolia)
