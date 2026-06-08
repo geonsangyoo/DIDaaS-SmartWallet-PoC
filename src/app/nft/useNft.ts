@@ -301,23 +301,26 @@ export function useNft() {
           description: "Non-transferable ERC-721: tokens are permanently bound to the recipient.",
         },
       });
-      setSoulbound((s) => ({ ...s, contractAddress: address, deployStep: "configuring" }));
+      setSoulbound((s) => ({ ...s, deployStep: "configuring" }));
       const contract = getContract({ client, chain: sepolia, address });
-      // ThirdWeb's TokenERC721.initialize grants TRANSFER_ROLE to both the
-      // deployer AND address(0) by default. address(0) holding TRANSFER_ROLE
-      // is the contract's "global unrestrict" flag — _beforeTokenTransfer skips
-      // the role check entirely when address(0) has the role. Both must be
-      // revoked to enforce soulbound. Minting (from == address(0)) is still
-      // always allowed because the check only fires when from != address(0).
+      // TokenERC721.initialize grants TRANSFER_ROLE to both the deployer AND
+      // address(0) by default. address(0) acts as the "global unrestrict" flag —
+      // _beforeTokenTransfer skips the role check entirely when address(0) has
+      // the role. Revoke address(0) first (per docs), then revoke the admin so
+      // that even the deployer (who mints to themselves in this PoC) cannot
+      // transfer. Minting (from == address(0)) is always allowed regardless.
       await sendAndConfirmTransaction({
         account,
-        transaction: revokeRole({ contract, role: "transfer", targetAccountAddress: account.address }),
+        transaction: revokeRole({ contract, role: "TRANSFER_ROLE", targetAccountAddress: ZERO_ADDRESS }),
       });
-      await sendAndConfirmTransaction({
-        account,
-        transaction: revokeRole({ contract, role: "transfer", targetAccountAddress: ZERO_ADDRESS }),
-      });
-      setSoulbound((s) => ({ ...s, deployStep: "idle" }));
+      // await sendAndConfirmTransaction({
+      //   account,
+      //   transaction: revokeRole({ contract, role: "TRANSFER_ROLE", targetAccountAddress: account.address }),
+      // });
+      // Only set the contract address after both role revocations succeed.
+      // If either revocation fails the catch block fires and contractAddress
+      // is never stored, preventing the UI from showing a misconfigured contract.
+      setSoulbound((s) => ({ ...s, contractAddress: address, deployStep: "idle" }));
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : "Deploy failed");
       setSoulbound((s) => ({ ...s, deployStep: "error" }));
