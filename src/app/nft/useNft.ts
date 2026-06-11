@@ -5,6 +5,7 @@ import { inAppWallet } from "thirdweb/wallets";
 import { useConnect, useActiveAccount, useDisconnect, useActiveWallet } from "thirdweb/react";
 import { sepolia } from "thirdweb/chains";
 import { sendAndConfirmTransaction, getContract } from "thirdweb";
+import { upload } from "thirdweb/storage";
 import { deployERC721Contract, deployERC1155Contract } from "thirdweb/deploys";
 import { mintTo as mintTo721, transferFrom } from "thirdweb/extensions/erc721";
 import { mintTo as mintTo1155, safeTransferFrom } from "thirdweb/extensions/erc1155";
@@ -218,13 +219,17 @@ export function useNft() {
     }
   };
 
-  const mintTransferable = async () => {
+  const mintTransferable = async (imageFile?: File) => {
     if (!account || !transferable.contractAddress) return;
     setTransferable((s) => ({ ...s, minting: true }));
     setGlobalError(null);
     try {
       const contract = getContract({ client, chain: sepolia, address: transferable.contractAddress });
       const index = transferable.tokens.length + 1;
+      let imageUri: string | undefined;
+      if (imageFile) {
+        imageUri = await upload({ client, files: [imageFile] });
+      }
       const receipt = await sendAndConfirmTransaction({
         account,
         transaction: mintTo721({
@@ -233,6 +238,7 @@ export function useNft() {
           nft: {
             name: `Transferable NFT #${index}`,
             description: "This token can be transferred to any address.",
+            ...(imageUri && { image: imageUri }),
           },
         }),
       });
@@ -327,13 +333,17 @@ export function useNft() {
     }
   };
 
-  const mintSoulbound = async () => {
+  const mintSoulbound = async (imageFile?: File) => {
     if (!account || !soulbound.contractAddress) return;
     setSoulbound((s) => ({ ...s, minting: true }));
     setGlobalError(null);
     try {
       const contract = getContract({ client, chain: sepolia, address: soulbound.contractAddress });
       const index = soulbound.tokens.length + 1;
+      let imageUri: string | undefined;
+      if (imageFile) {
+        imageUri = await upload({ client, files: [imageFile] });
+      }
       const receipt = await sendAndConfirmTransaction({
         account,
         transaction: mintTo721({
@@ -342,6 +352,7 @@ export function useNft() {
           nft: {
             name: `Soulbound NFT #${index}`,
             description: "This token is permanently bound to the recipient — transfer will revert.",
+            ...(imageUri && { image: imageUri }),
           },
         }),
       });
@@ -421,13 +432,17 @@ export function useNft() {
     }
   };
 
-  const mintEdition = async () => {
+  const mintEdition = async (imageFile?: File) => {
     if (!account || !edition.contractAddress) return;
     setEdition((s) => ({ ...s, minting: true }));
     setGlobalError(null);
     try {
       const contract = getContract({ client, chain: sepolia, address: edition.contractAddress });
       const index = edition.tokens.length + 1;
+      let imageUri: string | undefined;
+      if (imageFile) {
+        imageUri = await upload({ client, files: [imageFile] });
+      }
       const receipt = await sendAndConfirmTransaction({
         account,
         transaction: mintTo1155({
@@ -437,6 +452,7 @@ export function useNft() {
           nft: {
             name: `Edition NFT #${index}`,
             description: `One of ${EDITION_SUPPLY.toString()} copies — edition #${index}.`,
+            ...(imageUri && { image: imageUri }),
           },
         }),
       });

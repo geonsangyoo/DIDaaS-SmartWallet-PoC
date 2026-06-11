@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, type ChangeEvent } from "react";
 import Link from "next/link";
 import { GoogleLogin } from "@react-oauth/google";
 import {
@@ -236,10 +236,27 @@ function Erc721Panel({
   panel: NftPanelState;
   isSoulbound: boolean;
   onDeploy: () => void;
-  onMint: () => void;
+  onMint: (file?: File) => void;
   onTransfer: (tokenId: bigint, to: string) => void;
 }) {
   const deploying = panel.deployStep === "deploying" || panel.deployStep === "configuring";
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setImageFile(file);
+    setPreviewUrl(file ? URL.createObjectURL(file) : null);
+  };
+
+  const clearImage = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setImageFile(null);
+    setPreviewUrl(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
   return (
     <div className={`border ${borderClass} rounded-xl p-5 bg-zinc-900/30 flex flex-col gap-4`}>
@@ -299,22 +316,63 @@ function Erc721Panel({
       {/* Mint section */}
       {panel.contractAddress && (
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-zinc-500 uppercase tracking-wider">
-              Tokens ({panel.tokens.length})
-            </p>
-            <button
-              onClick={onMint}
+          <p className="text-xs text-zinc-500 uppercase tracking-wider">
+            Tokens ({panel.tokens.length})
+          </p>
+
+          {/* Image picker */}
+          <div className="space-y-1.5">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleImageChange}
               disabled={panel.minting}
-              className={`text-xs px-3 py-1 rounded-lg font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                isSoulbound
-                  ? "bg-orange-900 hover:bg-orange-800 text-orange-100"
-                  : "bg-blue-900 hover:bg-blue-800 text-blue-100"
-              }`}
-            >
-              {panel.minting ? "Minting…" : "+ Mint NFT"}
-            </button>
+            />
+            {previewUrl ? (
+              <div className="flex items-center gap-2 p-2 rounded-lg border border-zinc-700 bg-zinc-800/50">
+                <img
+                  src={previewUrl}
+                  alt="NFT image preview"
+                  className="w-10 h-10 object-cover rounded shrink-0"
+                />
+                <span className="text-xs text-zinc-400 truncate flex-1 min-w-0">
+                  {imageFile?.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={clearImage}
+                  disabled={panel.minting}
+                  className="text-zinc-500 hover:text-zinc-300 shrink-0 disabled:opacity-40"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={panel.minting}
+                className="w-full py-1.5 text-xs rounded-lg border border-dashed border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                + Select image (optional)
+              </button>
+            )}
           </div>
+
+          {/* Mint button */}
+          <button
+            onClick={() => onMint(imageFile ?? undefined)}
+            disabled={panel.minting}
+            className={`w-full py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              isSoulbound
+                ? "bg-orange-900 hover:bg-orange-800 text-orange-100"
+                : "bg-blue-900 hover:bg-blue-800 text-blue-100"
+            }`}
+          >
+            {panel.minting ? "Minting…" : imageFile ? "+ Mint NFT with Image" : "+ Mint NFT"}
+          </button>
 
           {panel.tokens.length === 0 && !panel.minting && (
             <p className="text-xs text-zinc-600 italic">No tokens minted yet</p>
@@ -323,7 +381,7 @@ function Erc721Panel({
           {panel.minting && (
             <div className="flex items-center gap-2 text-xs text-zinc-400">
               <div className="w-3 h-3 border border-zinc-500 border-t-zinc-300 rounded-full animate-spin shrink-0" />
-              Minting…
+              {imageFile ? "Uploading & minting…" : "Minting…"}
             </div>
           )}
 
@@ -353,10 +411,27 @@ function EditionPanel({
 }: {
   panel: EditionPanelState;
   onDeploy: () => void;
-  onMint: () => void;
+  onMint: (file?: File) => void;
   onTransfer: (tokenId: bigint, to: string, amount: bigint) => void;
 }) {
   const deploying = panel.deployStep === "deploying";
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setImageFile(file);
+    setPreviewUrl(file ? URL.createObjectURL(file) : null);
+  };
+
+  const clearImage = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setImageFile(null);
+    setPreviewUrl(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
   return (
     <div className="border border-purple-900/50 rounded-xl p-5 bg-zinc-900/30 flex flex-col gap-4">
@@ -411,18 +486,63 @@ function EditionPanel({
       {/* Mint section */}
       {panel.contractAddress && (
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-zinc-500 uppercase tracking-wider">
-              Editions ({panel.tokens.length})
-            </p>
-            <button
-              onClick={onMint}
+          <p className="text-xs text-zinc-500 uppercase tracking-wider">
+            Editions ({panel.tokens.length})
+          </p>
+
+          {/* Image picker */}
+          <div className="space-y-1.5">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleImageChange}
               disabled={panel.minting}
-              className="text-xs px-3 py-1 rounded-lg font-medium bg-purple-900 hover:bg-purple-800 text-purple-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {panel.minting ? "Minting…" : `+ Mint ${EDITION_SUPPLY.toString()} Copies`}
-            </button>
+            />
+            {previewUrl ? (
+              <div className="flex items-center gap-2 p-2 rounded-lg border border-zinc-700 bg-zinc-800/50">
+                <img
+                  src={previewUrl}
+                  alt="NFT image preview"
+                  className="w-10 h-10 object-cover rounded shrink-0"
+                />
+                <span className="text-xs text-zinc-400 truncate flex-1 min-w-0">
+                  {imageFile?.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={clearImage}
+                  disabled={panel.minting}
+                  className="text-zinc-500 hover:text-zinc-300 shrink-0 disabled:opacity-40"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={panel.minting}
+                className="w-full py-1.5 text-xs rounded-lg border border-dashed border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                + Select image (optional)
+              </button>
+            )}
           </div>
+
+          {/* Mint button */}
+          <button
+            onClick={() => onMint(imageFile ?? undefined)}
+            disabled={panel.minting}
+            className="w-full py-1.5 rounded-lg text-xs font-medium bg-purple-900 hover:bg-purple-800 text-purple-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {panel.minting
+              ? "Minting…"
+              : imageFile
+              ? `+ Mint ${EDITION_SUPPLY.toString()} Copies with Image`
+              : `+ Mint ${EDITION_SUPPLY.toString()} Copies`}
+          </button>
 
           {panel.tokens.length === 0 && !panel.minting && (
             <p className="text-xs text-zinc-600 italic">No editions minted yet</p>
@@ -431,7 +551,7 @@ function EditionPanel({
           {panel.minting && (
             <div className="flex items-center gap-2 text-xs text-zinc-400">
               <div className="w-3 h-3 border border-zinc-500 border-t-zinc-300 rounded-full animate-spin shrink-0" />
-              Minting…
+              {imageFile ? "Uploading & minting…" : "Minting…"}
             </div>
           )}
 
