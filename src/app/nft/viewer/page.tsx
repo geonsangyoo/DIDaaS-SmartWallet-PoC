@@ -133,7 +133,7 @@ export default function NftViewerPage() {
               Discover Deployed Contracts
             </p>
             <p className="text-xs text-zinc-500 mt-1">
-              Scans ThirdWeb's autofactory (TWCloneFactory) for{" "}
+              Scans ThirdWeb autofactory
               <code className="bg-zinc-800 px-1 rounded text-zinc-300">ProxyDeployedV2</code>{" "}
               events emitted when deploying via the ThirdWeb SDK.
               Enter the deployer wallet address to find all contracts it has deployed.
@@ -192,7 +192,7 @@ export default function NftViewerPage() {
                 ))}
               </div>
               <p className="text-xs text-zinc-600">
-                Click <span className="text-zinc-400">Inspect</span> to load a contract's metadata and tokens in the query below.
+                Click <span className="text-zinc-400">Inspect</span> to load a contract&apos;s metadata and tokens in the query below.
               </p>
             </div>
           )}

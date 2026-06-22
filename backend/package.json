@@ -9,8 +9,14 @@
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
+    "@zerodev/ecdsa-validator": "^5.4.9",
+    "@zerodev/permissions": "^5.6.3",
+    "@zerodev/remote-signer": "^5.3.3",
+    "@zerodev/sdk": "^5.5.10",
     "fastify": "^4.28.1",
-    "jose": "^5.9.6"
+    "jose": "^5.9.6",
+    "thirdweb": "^5.120.1",
+    "viem": "^2.52.2"
   },
   "devDependencies": {
     "@types/bun": "latest"

@@ -18,6 +18,7 @@ import {
   parseEther,
   parseUnits,
   erc20Abi,
+  encodeFunctionData,
   type Hex,
 } from "viem";
 import { toAccount } from "viem/accounts";
@@ -52,6 +53,8 @@ import {
   ZERODEV_CONFIGURED,
   ZERODEV_OWNER_ADDR_KEY,
   ZERODEV_SERIALIZED_KEY,
+  ZERODEV_REMOTE_SIGNER_KEY,
+  ZERODEV_REGISTERED_KEY,
   ZERODEV_RPC_URL,
   AMOUNT_DISPLAY,
 } from "./config";
@@ -73,21 +76,17 @@ export type ZdStep =
   | "granting"
   | "ready"
   | "link-pasted"
+  | "prefunding"   // V1 pre-fund / V2 fund-kernel Tx in-flight
+  | "registering"  // V2: registering session key to backend
   | "executing"
   | "done"
   | "error";
 
-// Per-asset configuration the Owner can set.
-//
-// For ETH the recipient becomes the policy `target` (required).
-// For ERC-20 the recipient is added as a ParamCondition.EQUAL constraint on
-// the first arg of `transfer(address,uint256)` when provided, or left
-// unconstrained (any recipient) when blank.
 export type AssetGrant = {
-  symbol: string;            // matches a TokenAsset.symbol
+  symbol: string;
   enabled: boolean;
-  capDisplay: string;        // amount cap in human display units
-  recipient?: string;        // ETH: required; ERC-20: optional (blank = any)
+  capDisplay: string;
+  recipient?: string;
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -98,7 +97,6 @@ function twToViemAccount(tw: TwAccount) {
       return (await tw.signMessage({ message })) as Hex;
     },
     async signTypedData(typedData) {
-      // thirdweb's signTypedData accepts the same EIP-712 shape viem uses
       return (await tw.signTypedData(typedData as never)) as Hex;
     },
     async signTransaction() {
@@ -159,26 +157,62 @@ function buildPermissionsForGrants(
   return permissions;
 }
 
+
+async function makeSudoKernelClient(ownerViemAccount: ReturnType<typeof twToViemAccount>) {
+  const sudoValidator = await signerToEcdsaValidator(publicClient, {
+    signer: ownerViemAccount,
+    entryPoint: ENTRY_POINT,
+    kernelVersion: KERNEL_VERSION,
+  });
+  const kernelAccount = await createKernelAccount(publicClient, {
+    plugins: { sudo: sudoValidator },
+    entryPoint: ENTRY_POINT,
+    kernelVersion: KERNEL_VERSION,
+  });
+  const zerodevTransport = http(ZERODEV_RPC_URL);
+  const paymasterClient = createZeroDevPaymasterClient({
+    chain: sepolia,
+    transport: zerodevTransport,
+  });
+  return {
+    kernelAddress: kernelAccount.address,
+    client: createKernelAccountClient({
+      account: kernelAccount,
+      chain: sepolia,
+      bundlerTransport: zerodevTransport,
+      paymaster: paymasterClient,
+    }),
+  };
+}
+
 // ── Hook ─────────────────────────────────────────────────────────────────────
 export function useSessionKeyZerodev() {
   const [step, setStep] = useState<ZdStep>("idle");
   const [error, setError] = useState<string | null>(null);
   const [execTxHash, setExecTxHash] = useState<string | null>(null);
-  const [ownerKernelAddress, setOwnerKernelAddress] = useState<string | null>(
-    null,
+  // Persisted in localStorage so Phase 2 remains accessible after wallet disconnect
+  const [ownerKernelAddress, setOwnerKernelAddress] = useState<string | null>(() =>
+    typeof window !== "undefined" ? localStorage.getItem(ZERODEV_OWNER_ADDR_KEY) : null
   );
-  const [serializedSessionKey, setSerializedSessionKey] = useState<
-    string | null
-  >(null);
+  const [serializedSessionKey, setSerializedSessionKey] = useState<string | null>(null);
 
-  // Delegate side. The kernel client's full generic type is unwieldy; type it
-  // loosely here since we only need it to send UserOps.
-  const [delegateKernelAddress, setDelegateKernelAddress] = useState<
-    string | null
-  >(null);
+  // Delegate side
+  const [delegateKernelAddress, setDelegateKernelAddress] = useState<string | null>(null);
   const [delegateClient, setDelegateClient] = useState<ReturnType<
     typeof createKernelAccountClient
   > | null>(null);
+
+  // V1: Pre-fund flow
+  const [v1PrefundTxHash, setV1PrefundTxHash] = useState<string | null>(null);
+  const [v1ExecTxHash, setV1ExecTxHash] = useState<string | null>(null);
+
+  // V2: AI Agent flow — kernel address + registered status survive wallet disconnect
+  const [isRegistered, setIsRegistered] = useState<boolean>(() =>
+    typeof window !== "undefined" ? localStorage.getItem(ZERODEV_REGISTERED_KEY) === "true" : false
+  );
+  const [remoteSignerAddress, setRemoteSignerAddress] = useState<string | null>(null);
+  const [agentFundTxHash, setAgentFundTxHash] = useState<string | null>(null);
+  const [agentTxHash, setAgentTxHash] = useState<string | null>(null);
 
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
@@ -186,6 +220,7 @@ export function useSessionKeyZerodev() {
   const account = useActiveAccount();
 
   const configured = ZERODEV_CONFIGURED;
+
 
   const getJwt = async (idToken: string): Promise<string> => {
     const res = await fetch(`${BACKEND_URL}/auth/google`, {
@@ -198,7 +233,7 @@ export function useSessionKeyZerodev() {
     return jwt;
   };
 
-  // ── Owner: connect with in-app wallet (EOA) ─────────────────────────────────
+  // ── Owner: connect with in-app wallet (EOA) ──────────────────────────────
   const handleOwnerConnect = async (idToken: string) => {
     setError(null);
     setStep("connecting");
@@ -214,9 +249,6 @@ export function useSessionKeyZerodev() {
       const eoa = connectedWallet?.getAccount();
       if (!eoa) throw new Error("Failed to get EOA");
 
-      // Build sudo validator from the Owner EOA so we can predict the kernel
-      // address and later use it as the sudo signer when serializing the
-      // session-key account.
       const ownerSigner = twToViemAccount(eoa);
       const sudoValidator = await signerToEcdsaValidator(publicClient, {
         signer: ownerSigner,
@@ -240,11 +272,7 @@ export function useSessionKeyZerodev() {
     }
   };
 
-  // ── Owner: build session key with policies, serialize for sharing ──────────
-  //
-  // No on-chain tx needed. The serialized blob carries the validator + policies
-  // and is consumed by the delegate at use-time. The kernel deploys lazily on
-  // the delegate's first UserOp.
+  // ── Owner: grant session key (transfer policy) ───────────────────────────
   const handleGrantSessionKey = async (
     delegateAddress: string,
     grants: AssetGrant[],
@@ -263,8 +291,6 @@ export function useSessionKeyZerodev() {
         kernelVersion: KERNEL_VERSION,
       });
 
-      // Empty signer for the delegate (only the address is needed at grant
-      // time; the delegate's actual signer is plugged in on deserialize).
       const emptySessionKeySigner = toEmptyECDSASigner(
         delegateAddress as `0x${string}`,
       );
@@ -272,7 +298,6 @@ export function useSessionKeyZerodev() {
       const permissions = buildPermissionsForGrants(grants, TOKEN_ASSETS);
       const callPolicy = toCallPolicy({
         policyVersion: CallPolicyVersion.V0_0_4,
-        // Cast: typed inference is too strict for our dynamic grant list.
         permissions: permissions as never,
       });
 
@@ -305,7 +330,8 @@ export function useSessionKeyZerodev() {
     }
   };
 
-  // ── Delegate: connect EOA + deserialize the session key string ────────────
+
+  // ── Delegate: connect EOA + deserialize the session key ──────────────────
   const handleDelegateConnect = async (
     idToken: string,
     serialized: string,
@@ -337,10 +363,6 @@ export function useSessionKeyZerodev() {
         sessionKeySigner,
       );
 
-      // Use ZeroDev's RPC for both bundler and paymaster. Thirdweb's paymaster
-      // is not ERC-7677 compliant (only legacy `pm_sponsorUserOperation`) and
-      // ZeroDev's bundler natively supports `zd_getUserOperationGasPrice`, so
-      // the previous fee-estimator override is no longer needed.
       const zerodevTransport = http(ZERODEV_RPC_URL);
 
       const paymasterClient = createZeroDevPaymasterClient({
@@ -364,7 +386,7 @@ export function useSessionKeyZerodev() {
     }
   };
 
-  // ── Delegate: execute transfer via the session key ─────────────────────────
+  // ── Delegate: execute transfer via the session key ────────────────────────
   const executeTransfer = async (
     recipient: string,
     asset: TokenAsset,
@@ -405,11 +427,6 @@ export function useSessionKeyZerodev() {
               ];
             })();
 
-      console.log("Sending UserOperation with calls:", calls);
-
-      // Cast to bypass the union-narrowing issue on the client's generic type;
-      // the kernel client always carries an account, so passing none here is
-      // valid at runtime.
       const send = (
         delegateClient as unknown as {
           sendUserOperation: (a: { calls: typeof calls }) => Promise<Hex>;
@@ -418,9 +435,7 @@ export function useSessionKeyZerodev() {
           }) => Promise<{ receipt: { transactionHash: Hex } }>;
         }
       );
-      console.log("Calling sendUserOperation...", send);
       const userOpHash = await send.sendUserOperation({ calls });
-      console.log("UserOp sent, hash:", userOpHash);
       const { receipt } = await send.waitForUserOperationReceipt({
         hash: userOpHash,
       });
@@ -434,15 +449,293 @@ export function useSessionKeyZerodev() {
     }
   };
 
+  // ── V1: Pre-fund Kernel then execute via sudo validator ───────────────────
+  // Step A: ThirdWeb EOA → Kernel SCW (regular Tx, moves tokens into Kernel)
+  // Step B: Kernel → recipient (UserOp via sudo ECDSA validator, no session key)
+  const handlePrefundAndSudoExecute = async (
+    recipient: string,
+    asset: TokenAsset,
+    amountDisplay: string,
+  ) => {
+    if (!account) return;
+    setError(null);
+    setV1PrefundTxHash(null);
+    setV1ExecTxHash(null);
+    setStep("prefunding");
+    try {
+      if (!configured) throw new Error("ZeroDev not configured");
+
+      // ── Step A: Pre-fund Tx (EOA → Kernel) ─────────────────────────────
+      const ownerSigner = twToViemAccount(account);
+      const { kernelAddress, client: sudoClient } = await makeSudoKernelClient(ownerSigner);
+
+      let prefundTx: { to: `0x${string}`; value: bigint; data: Hex };
+      if (asset.kind === "native") {
+        prefundTx = {
+          to: kernelAddress as `0x${string}`,
+          value: parseEther(amountDisplay),
+          data: "0x",
+        };
+      } else {
+        if (!asset.address) throw new Error(`No address for ${asset.symbol}`);
+        prefundTx = {
+          to: asset.address as `0x${string}`,
+          value: 0n,
+          data: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: "transfer",
+            args: [kernelAddress as `0x${string}`, parseUnits(amountDisplay, asset.decimals)],
+          }),
+        };
+      }
+
+      const { transactionHash: pHash } = await account.sendTransaction({
+        ...prefundTx,
+        chainId: sepolia.id,
+      });
+      setV1PrefundTxHash(pHash);
+
+      // Wait for pre-fund to be mined before executing the UserOp
+      await publicClient.waitForTransactionReceipt({ hash: pHash as `0x${string}` });
+
+      // ── Step B: Kernel → recipient (UserOp, gas sponsored by ZeroDev) ──
+      setStep("executing");
+
+      const calls =
+        asset.kind === "native"
+          ? [{ to: recipient as `0x${string}`, value: parseEther(amountDisplay), data: "0x" as Hex }]
+          : [{
+              to: asset.address! as `0x${string}`,
+              value: 0n,
+              data: encodeErc20Transfer(
+                recipient as `0x${string}`,
+                parseUnits(amountDisplay, asset.decimals),
+              ),
+            }];
+
+      const send = sudoClient as unknown as {
+        sendUserOperation(a: { calls: typeof calls }): Promise<Hex>;
+        waitForUserOperationReceipt(a: { hash: Hex }): Promise<{ receipt: { transactionHash: Hex } }>;
+      };
+
+      const userOpHash = await send.sendUserOperation({ calls });
+      const { receipt } = await send.waitForUserOperationReceipt({ hash: userOpHash });
+      setV1ExecTxHash(receipt.transactionHash);
+      setStep("done");
+    } catch (err) {
+      console.error("V1 prefund+execute error:", err);
+      setError(err instanceof Error ? err.message : "Prefund + execute failed");
+      setStep("error");
+    }
+  };
+
+
+  // ── V2: Register serialized session key to backend ────────────────────────
+  // Backend stores it keyed by kernelAddress; AI agent looks it up when
+  // triggering a transfer via POST /agent/transfer.
+  const handleRegisterToBackend = async () => {
+    if (!serializedSessionKey || !ownerKernelAddress) return;
+    setError(null);
+    setStep("registering");
+    try {
+      const res = await fetch(`${BACKEND_URL}/session-key/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kernelAddress: ownerKernelAddress,
+          serializedSessionKey,
+          thirdwebSCWAddress: account?.address,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to register session key to backend");
+      setIsRegistered(true);
+      setStep("ready");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Registration failed");
+      setStep("error");
+    }
+  };
+
+  // ── V2: Issue SCW + register in one step (JPYC-specific) ─────────────────
+  // Combines: fetch remote signer → build transferFrom session key → register.
+  // amountCap: JPYC amount in display units (e.g. "10000")
+  // recipient: fixed recipient address, or undefined = any address allowed
+  const handleIssueAndRegister = async (
+    amountCap: string,
+    recipient?: string,
+  ) => {
+    if (!account) return;
+    setError(null);
+    setStep("granting");
+    try {
+      if (!configured) throw new Error("ZeroDev not configured");
+
+      // Ensure remote signer address is available
+      let signerAddr = remoteSignerAddress;
+      if (!signerAddr) {
+        const res = await fetch(`${BACKEND_URL}/remote-signer/address`);
+        if (!res.ok) throw new Error("Backend unavailable — REMOTE_SIGNER_PRIVATE_KEY not set");
+        const data = (await res.json()) as { address: string };
+        signerAddr = data.address;
+        setRemoteSignerAddress(signerAddr);
+        if (typeof window !== "undefined") {
+          localStorage.setItem(ZERODEV_REMOTE_SIGNER_KEY, signerAddr);
+        }
+      }
+
+      const jpycAsset = TOKEN_ASSETS.find((a) => a.symbol === "JPYC");
+      if (!jpycAsset?.address) {
+        throw new Error("JPYC not configured — set NEXT_PUBLIC_SESSION_KEY_JPYC_ADDRESS");
+      }
+
+      const grants: AssetGrant[] = [{
+        symbol: "JPYC",
+        enabled: true,
+        capDisplay: amountCap,
+        recipient: recipient || undefined,
+      }];
+
+      const ownerSigner = twToViemAccount(account);
+      const sudoValidator = await signerToEcdsaValidator(publicClient, {
+        signer: ownerSigner,
+        entryPoint: ENTRY_POINT,
+        kernelVersion: KERNEL_VERSION,
+      });
+
+      const emptySessionKeySigner = toEmptyECDSASigner(signerAddr as `0x${string}`);
+      // Transfer policy: Kernel calls JPYC.transfer(recipient, ≤cap) from its own balance.
+      const permissions = buildPermissionsForGrants(grants, TOKEN_ASSETS);
+      const callPolicy = toCallPolicy({
+        policyVersion: CallPolicyVersion.V0_0_4,
+        permissions: permissions as never,
+      });
+      const permissionPlugin = await toPermissionValidator(publicClient, {
+        entryPoint: ENTRY_POINT,
+        signer: emptySessionKeySigner,
+        policies: [callPolicy],
+        kernelVersion: KERNEL_VERSION,
+      });
+
+      const sessionKeyAccount = await createKernelAccount(publicClient, {
+        entryPoint: ENTRY_POINT,
+        kernelVersion: KERNEL_VERSION,
+        plugins: { sudo: sudoValidator, regular: permissionPlugin },
+      });
+
+      const serialized = await serializePermissionAccount(sessionKeyAccount);
+      const kernelAddr = sessionKeyAccount.address;
+
+      // Register to backend (uses locally captured values — no state race)
+      const regRes = await fetch(`${BACKEND_URL}/session-key/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kernelAddress: kernelAddr,
+          serializedSessionKey: serialized,
+          // Kernel holds its own tokens — no thirdwebSCWAddress needed
+        }),
+      });
+      if (!regRes.ok) throw new Error("Failed to register session key to backend");
+
+      setSerializedSessionKey(serialized);
+      setOwnerKernelAddress(kernelAddr);
+      setIsRegistered(true);
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem(ZERODEV_OWNER_ADDR_KEY, kernelAddr);
+        localStorage.setItem(ZERODEV_SERIALIZED_KEY, serialized);
+        localStorage.setItem(ZERODEV_REGISTERED_KEY, "true");
+      }
+
+      setStep("ready");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Issue failed");
+      setStep("error");
+    }
+  };
+
+  // ── V2: Fetch remote signer address from backend ─────────────────────────
+  const fetchRemoteSignerAddress = async () => {
+    setError(null);
+    try {
+      const res = await fetch(`${BACKEND_URL}/remote-signer/address`);
+      if (!res.ok) throw new Error("Backend returned error — check REMOTE_SIGNER_PRIVATE_KEY in backend .env");
+      const data = (await res.json()) as { address: string };
+      setRemoteSignerAddress(data.address);
+      if (typeof window !== "undefined") {
+        localStorage.setItem(ZERODEV_REMOTE_SIGNER_KEY, data.address);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch remote signer address");
+    }
+  };
+
+  // ── V2: AI Agent executes Phase 2 via backend ────────────────────────────
+  // Backend does: A → B (fund kernel) then B → C (session key transfer)
+  const handleAgentTransfer = async (
+    recipient: string,
+    tokenAddress: string,
+    amountDisplay: string,
+    decimals: number,
+  ) => {
+    if (!ownerKernelAddress) return;
+    setError(null);
+    setAgentTxHash(null);
+    setAgentFundTxHash(null);
+    setStep("executing");
+    try {
+      const res = await fetch(`${BACKEND_URL}/agent/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kernelAddress: ownerKernelAddress,
+          recipient,
+          tokenAddress,
+          amount: amountDisplay,
+          decimals,
+        }),
+      });
+      const data = (await res.json()) as { fundTxHash?: string; transferTxHash?: string; error?: string };
+      if (!res.ok || !data.transferTxHash) throw new Error(data.error ?? "Agent execute failed");
+      setAgentFundTxHash(data.fundTxHash ?? null);
+      setAgentTxHash(data.transferTxHash);
+      setStep("done");
+    } catch (err) {
+      console.error("Agent execute error:", err);
+      setError(err instanceof Error ? err.message : "Agent execute failed");
+      setStep("error");
+    }
+  };
+
+  // ── Disconnect (wallet only — kernel address persists for Phase 2) ────────
   const handleDisconnect = () => {
     if (activeWallet) disconnect(activeWallet);
-    setOwnerKernelAddress(null);
     setSerializedSessionKey(null);
     setDelegateClient(null);
     setDelegateKernelAddress(null);
     setExecTxHash(null);
+    setV1PrefundTxHash(null);
+    setV1ExecTxHash(null);
+    setRemoteSignerAddress(null);
     setStep("idle");
     setError(null);
+    // ownerKernelAddress and isRegistered are intentionally kept so Phase 2
+    // remains accessible after the owner wallet disconnects.
+  };
+
+  // ── Full reset — clears all state including persisted Phase 1 data ────────
+  const handleReset = () => {
+    handleDisconnect();
+    setOwnerKernelAddress(null);
+    setIsRegistered(false);
+    setAgentTxHash(null);
+    setAgentFundTxHash(null);
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(ZERODEV_OWNER_ADDR_KEY);
+      localStorage.removeItem(ZERODEV_SERIALIZED_KEY);
+      localStorage.removeItem(ZERODEV_REMOTE_SIGNER_KEY);
+      localStorage.removeItem(ZERODEV_REGISTERED_KEY);
+    }
   };
 
   return {
@@ -454,16 +747,30 @@ export function useSessionKeyZerodev() {
     serializedSessionKey,
     delegateKernelAddress,
     execTxHash,
+    // V1
+    v1PrefundTxHash,
+    v1ExecTxHash,
+    // V2
+    isRegistered,
+    remoteSignerAddress,
+    agentFundTxHash,
+    agentTxHash,
+    // Actions
     handleOwnerConnect,
     handleGrantSessionKey,
+    handleIssueAndRegister,
     handleDelegateConnect,
     executeTransfer,
+    handlePrefundAndSudoExecute,
+    handleRegisterToBackend,
+    fetchRemoteSignerAddress,
+    handleAgentTransfer,
     handleDisconnect,
+    handleReset,
   };
 }
 
 // ── Local helpers ────────────────────────────────────────────────────────────
-import { encodeFunctionData } from "viem";
 function encodeErc20Transfer(to: `0x${string}`, amount: bigint): Hex {
   return encodeFunctionData({
     abi: erc20Abi,

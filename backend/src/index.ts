@@ -8,6 +8,7 @@ import {
   createRemoteJWKSet,
   jwtVerify,
 } from "jose";
+import { getRemoteSignerAddress, getAssetOwnerAddress, fundKernel, executeViaRemoteSigner, type TransferCall } from "./zerodev-client";
 
 const app = Fastify({ logger: true });
 
@@ -157,5 +158,224 @@ app.post<{ Body: { payload: string } }>(
     };
   }
 );
+
+// ── Session key store (in-memory for PoC) ─────────────────────────────────────
+// Keyed by kernelAddress so AI agent can look up by target wallet.
+type SessionKeyEntry = {
+  serializedSessionKey: string;
+  thirdwebSCWAddress?: string; // EOA address holding tokens (for transferFrom)
+};
+const sessionKeyStore = new Map<string, SessionKeyEntry>();
+
+// ── Remote Signer: address endpoint ──────────────────────────────────────────
+// Frontend fetches this so the Owner can grant a session key to the server EOA.
+app.get("/remote-signer/address", async (_req, reply) => {
+  try {
+    const address = getRemoteSignerAddress();
+    return { address };
+  } catch (err) {
+    app.log.warn({ err }, "remote signer not configured");
+    return reply.status(503).send({ error: "REMOTE_SIGNER_PRIVATE_KEY not configured" });
+  }
+});
+
+// ── Asset Owner: address endpoint ─────────────────────────────────────────────
+// Exposes the ThirdWeb ERC-4337 smart wallet address for the asset owner (A).
+app.get("/asset-owner/address", async (_req, reply) => {
+  try {
+    const address = await getAssetOwnerAddress();
+    return { address };
+  } catch (err) {
+    app.log.warn({ err }, "asset owner not configured");
+    return reply.status(503).send({ error: "ASSET_OWNER_PRIVATE_KEY or THIRDWEB_SECRET_KEY not configured" });
+  }
+});
+
+// ── Session key registration ──────────────────────────────────────────────────
+// Owner calls this after granting a session key to the remote signer.
+// Body: { kernelAddress, serializedSessionKey, thirdwebSCWAddress? }
+app.post<{
+  Body: { kernelAddress: string; serializedSessionKey: string; thirdwebSCWAddress?: string };
+}>(
+  "/session-key/register",
+  {
+    schema: {
+      body: {
+        type: "object",
+        required: ["kernelAddress", "serializedSessionKey"],
+        properties: {
+          kernelAddress: { type: "string" },
+          serializedSessionKey: { type: "string" },
+          thirdwebSCWAddress: { type: "string" },
+        },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { kernelAddress, serializedSessionKey, thirdwebSCWAddress } = req.body;
+    sessionKeyStore.set(kernelAddress.toLowerCase(), { serializedSessionKey, thirdwebSCWAddress });
+    app.log.info({ kernelAddress }, "session key registered");
+    return { ok: true };
+  },
+);
+
+// ── AI Agent execute (Phase 2) ────────────────────────────────────────────────
+// Single call that does both:
+//   Step 1: A → B  — ASSET_OWNER_PRIVATE_KEY sends JPYC to the Kernel SCW
+//   Step 2: B → C  — Remote signer executes transfer via session key UserOp
+// Body: { kernelAddress, recipient, tokenAddress, amount, decimals? }
+app.post<{
+  Body: {
+    kernelAddress: string;
+    recipient: string;
+    tokenAddress: string;
+    amount: string;
+    decimals?: number;
+  };
+}>(
+  "/agent/execute",
+  {
+    schema: {
+      body: {
+        type: "object",
+        required: ["kernelAddress", "recipient", "tokenAddress", "amount"],
+        properties: {
+          kernelAddress: { type: "string" },
+          recipient: { type: "string" },
+          tokenAddress: { type: "string" },
+          amount: { type: "string" },
+          decimals: { type: "number" },
+        },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { kernelAddress, recipient, tokenAddress, amount, decimals = 18 } = req.body;
+
+    const entry = sessionKeyStore.get(kernelAddress.toLowerCase());
+    if (!entry) {
+      return reply.status(404).send({ error: "Session key not registered for this kernel address" });
+    }
+
+    try {
+      // Step 1: Fund kernel — A → B
+      app.log.info({ kernelAddress, amount, tokenAddress }, "phase2 step1: funding kernel...");
+      const fundTxHash = await fundKernel(
+        kernelAddress as `0x${string}`,
+        tokenAddress as `0x${string}`,
+        amount,
+        decimals,
+      );
+      app.log.info({ fundTxHash }, "phase2 step1: kernel funded");
+
+      // Step 2: Session key transfer — B → C
+      app.log.info({ kernelAddress, recipient }, "phase2 step2: executing transfer via session key...");
+      const transferTxHash = await executeViaRemoteSigner(entry.serializedSessionKey, {
+        kind: "erc20",
+        tokenAddress: tokenAddress as `0x${string}`,
+        recipient: recipient as `0x${string}`,
+        amount,
+        decimals,
+      });
+      app.log.info({ transferTxHash }, "phase2 step2: transfer complete");
+
+      return { fundTxHash, transferTxHash };
+    } catch (err) {
+      app.log.error({ err, kernelAddress }, "agent execute failed");
+      const msg = err instanceof Error ? err.message : "Execute failed";
+      return reply.status(500).send({ error: msg });
+    }
+  },
+);
+
+// ── AI Agent transfer (legacy) ────────────────────────────────────────────────
+// AI agent calls this to trigger a transfer via the stored session key.
+// Body: { kernelAddress, recipient, tokenAddress?, amount, decimals?, source? }
+//   tokenAddress: null/omitted = ETH native transfer
+//   source: if set, uses transferFrom(source, recipient, amount) instead of transfer
+app.post<{
+  Body: {
+    kernelAddress: string;
+    recipient: string;
+    tokenAddress?: string | null;
+    amount: string;
+    decimals?: number;
+    source?: string | null;
+  };
+}>(
+  "/agent/transfer",
+  {
+    schema: {
+      body: {
+        type: "object",
+        required: ["kernelAddress", "recipient", "amount"],
+        properties: {
+          kernelAddress: { type: "string" },
+          recipient: { type: "string" },
+          tokenAddress: { type: "string", nullable: true },
+          amount: { type: "string" },
+          decimals: { type: "number" },
+          source: { type: "string", nullable: true },
+        },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { kernelAddress, recipient, tokenAddress, amount, decimals = 18, source } = req.body;
+
+    const entry = sessionKeyStore.get(kernelAddress.toLowerCase());
+    if (!entry) {
+      return reply.status(404).send({ error: "Session key not registered for this kernel address" });
+    }
+
+    let transfer: TransferCall;
+    const resolvedSource = source ?? entry.thirdwebSCWAddress;
+
+    if (!tokenAddress) {
+      transfer = { kind: "native", recipient: recipient as `0x${string}`, amount };
+    } else if (resolvedSource) {
+      transfer = {
+        kind: "transferFrom",
+        tokenAddress: tokenAddress as `0x${string}`,
+        source: resolvedSource as `0x${string}`,
+        recipient: recipient as `0x${string}`,
+        amount,
+        decimals,
+      };
+    } else {
+      transfer = {
+        kind: "erc20",
+        tokenAddress: tokenAddress as `0x${string}`,
+        recipient: recipient as `0x${string}`,
+        amount,
+        decimals,
+      };
+    }
+
+    try {
+      const txHash = await executeViaRemoteSigner(entry.serializedSessionKey, transfer);
+      app.log.info({ kernelAddress, txHash }, "agent transfer executed");
+      return { txHash };
+    } catch (err) {
+      app.log.error({ err, kernelAddress }, "agent transfer failed");
+      const msg = err instanceof Error ? err.message : "Transfer failed";
+      return reply.status(500).send({ error: msg });
+    }
+  },
+);
+
+// Initialize signers on startup
+try {
+  const addr = getRemoteSignerAddress();
+  app.log.info({ address: addr }, "remote signer (D) ready");
+} catch (err) {
+  app.log.warn({ err }, "remote signer not configured");
+}
+try {
+  const addr = await getAssetOwnerAddress();
+  app.log.info({ address: addr }, "asset owner smart wallet (A) ready");
+} catch (err) {
+  app.log.warn({ err }, "asset owner not configured — check ASSET_OWNER_PRIVATE_KEY and THIRDWEB_SECRET_KEY");
+}
 
 await app.listen({ port, host: "0.0.0.0" });

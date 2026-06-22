@@ -130,7 +130,6 @@ export function useNftViewer() {
 
       // Token list
       const ownerAddr = state.ownerFilter.trim();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let rawNfts: any[];
 
       if (state.contractType === "erc721") {
@@ -197,7 +196,6 @@ export function useNftViewer() {
         ],
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const discovered: DiscoveredContract[] = events.map((e: any) => ({
         proxy: e.args.proxy as string,
         implementation: e.args.implementation as string,

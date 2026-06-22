@@ -136,3 +136,5 @@ export const DEFAULT_AMOUNT_CAPS: Record<string, string> = {
 export const ZERODEV_OWNER_ADDR_KEY =
   "sessionKey_zerodev_ownerKernelAddress";
 export const ZERODEV_SERIALIZED_KEY = "sessionKey_zerodev_serialized";
+export const ZERODEV_REMOTE_SIGNER_KEY = "sessionKey_zerodev_remoteSignerAddress";
+export const ZERODEV_REGISTERED_KEY = "sessionKey_zerodev_registered";

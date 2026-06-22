@@ -14,7 +14,7 @@ function shorten(addr: string) {
 type Role = "owner" | "delegate";
 
 export default function SessionKeyPage() {
-  const [backend, setBackend] = useState<Backend>("thirdweb");
+  const [backend, setBackend] = useState<Backend>("zerodev");
   const [role, setRole] = useState<Role>("owner");
   const [ownerAddrInput, setOwnerAddrInput] = useState("");
 
